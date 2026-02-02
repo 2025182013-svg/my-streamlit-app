@@ -1,7 +1,9 @@
 import streamlit as st
 import requests
 import json
+import re
 from openai import OpenAI
+from datetime import datetime
 
 # ==================================================
 # 기본 설정
@@ -14,24 +16,41 @@ st.set_page_config(
 
 TMDB_IMAGE = "https://image.tmdb.org/t/p/w342"
 TMDB_MOVIE_URL = "https://www.themoviedb.org/movie/"
+TMDB_YOUTUBE = "https://www.youtube.com/results?search_query="
 
 # ==================================================
-# 사이드바 (무조건 입력)
+# 사이드바
 # ==================================================
 st.sidebar.title("🔑 API 설정")
 
-openai_key = st.sidebar.text_input(
-    "OpenAI API Key",
-    type="password",
-    help="sk- 로 시작하는 OpenAI API Key"
-)
-
-tmdb_key = st.sidebar.text_input(
-    "TMDB API Key",
-    type="password"
-)
+openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
+tmdb_key = st.sidebar.text_input("TMDB API Key", type="password")
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("🎛️ 추천 옵션")
+
+current_year = datetime.now().year
+year_range = st.sidebar.slider(
+    "📅 개봉 연도",
+    1990, current_year, (2010, current_year)
+)
+
+min_rating = st.sidebar.slider(
+    "⭐ 최소 평점",
+    0.0, 10.0, 6.5, 0.1
+)
+
+country = st.sidebar.selectbox(
+    "🌍 국가",
+    ["전체", "한국", "미국", "영어권"]
+)
+
+country_params = {
+    "전체": {},
+    "한국": {"with_original_language": "ko", "region": "KR"},
+    "미국": {"with_original_language": "en", "region": "US"},
+    "영어권": {"with_original_language": "en"},
+}
 
 # ==================================================
 # 찜 목록
@@ -39,7 +58,9 @@ st.sidebar.markdown("---")
 if "wishlist" not in st.session_state:
     st.session_state.wishlist = []
 
+st.sidebar.markdown("---")
 st.sidebar.subheader("❤️ 찜한 영화")
+
 if st.session_state.wishlist:
     for title in st.session_state.wishlist:
         st.sidebar.write("•", title)
@@ -47,11 +68,11 @@ else:
     st.sidebar.caption("아직 찜한 영화가 없어요")
 
 # ==================================================
-# OpenAI client 생성 함수 (⭐ 핵심)
+# OpenAI client (사이드바 ONLY)
 # ==================================================
 def get_openai_client():
     if not openai_key:
-        st.error("⚠️ OpenAI API Key를 사이드바에 입력해주세요.")
+        st.error("OpenAI API Key를 사이드바에 입력해주세요.")
         st.stop()
     return OpenAI(api_key=openai_key)
 
@@ -76,19 +97,13 @@ st.markdown("<br>", unsafe_allow_html=True)
 if st.session_state.question is None:
     if st.button("🗨️ 상담 시작하기"):
         client = get_openai_client()
-
         with st.spinner("상담 질문을 준비 중이에요..."):
-            try:
-                res = client.responses.create(
-                    model="gpt-4o-mini",
-                    input="영화 추천을 위한 감정 상담 질문을 하나 만들어줘. 친구에게 말하듯 짧게."
-                )
-                st.session_state.question = res.output_text.strip()
-                st.rerun()
-            except Exception as e:
-                st.error("OpenAI API 인증에 실패했어요.")
-                st.caption(str(e))
-                st.stop()
+            res = client.responses.create(
+                model="gpt-4o-mini",
+                input="영화 추천을 위한 감정 상담 질문을 하나 만들어줘. 친구에게 말하듯 짧게."
+            )
+            st.session_state.question = res.output_text.strip()
+            st.rerun()
 
 # ==================================================
 # 2️⃣ 사용자 답변
@@ -109,19 +124,19 @@ if st.session_state.question:
         client = get_openai_client()
 
         with st.spinner("당신의 마음을 이해하고 있어요..."):
-            # --------------------------------------
-            # 1. 감정 공감 + 장르 결정
-            # --------------------------------------
+            # ------------------------------
+            # 1. 감정 + 장르 분석
+            # ------------------------------
             analysis_prompt = f"""
-            사용자의 말을 보고 공감 한 문장과
-            어울리는 영화 장르 1개를 골라줘.
+            사용자의 말에 공감하고,
+            어울리는 영화 장르 하나를 골라줘.
 
             장르 후보:
             액션, 드라마, 코미디, 로맨스, 판타지, SF
 
-            반드시 JSON으로만 응답해.
+            반드시 JSON만:
             {{
-              "empathy": "공감 문장",
+              "empathy": "...",
               "genre": "드라마"
             }}
 
@@ -129,23 +144,20 @@ if st.session_state.question:
             "{user_input}"
             """
 
-            try:
-                analysis_res = client.responses.create(
-                    model="gpt-4o-mini",
-                    input=analysis_prompt
-                )
-                analysis = json.loads(analysis_res.output_text)
-            except Exception as e:
-                st.error("감정 분석 중 오류가 발생했어요.")
-                st.caption(str(e))
-                st.stop()
+            analysis_res = client.responses.create(
+                model="gpt-4o-mini",
+                input=analysis_prompt
+            )
+
+            analysis_json = re.search(r"\{.*\}", analysis_res.output_text, re.S)
+            analysis = json.loads(analysis_json.group())
 
             empathy = analysis["empathy"]
             genre = analysis["genre"]
 
-            # --------------------------------------
-            # 2. TMDB 후보 영화 수집
-            # --------------------------------------
+            # ------------------------------
+            # 2. TMDB 후보 영화
+            # ------------------------------
             genre_id_map = {
                 "액션": 28,
                 "코미디": 35,
@@ -155,55 +167,60 @@ if st.session_state.question:
                 "SF": 878
             }
 
-            genre_id = genre_id_map.get(genre, 18)
+            params = {
+                "api_key": tmdb_key,
+                "language": "ko-KR",
+                "with_genres": genre_id_map.get(genre, 18),
+                "sort_by": "vote_average.desc",
+                "vote_average.gte": min_rating,
+                "primary_release_date.gte": f"{year_range[0]}-01-01",
+                "primary_release_date.lte": f"{year_range[1]}-12-31",
+                "vote_count.gte": 300
+            }
+            params.update(country_params[country])
 
-            discover_url = (
-                f"https://api.themoviedb.org/3/discover/movie"
-                f"?api_key={tmdb_key}"
-                f"&language=ko-KR"
-                f"&with_genres={genre_id}"
-                f"&sort_by=vote_average.desc"
-                f"&vote_count.gte=300"
-            )
+            movies = requests.get(
+                "https://api.themoviedb.org/3/discover/movie",
+                params=params
+            ).json().get("results", [])[:5]
 
-            movies = requests.get(discover_url).json().get("results", [])[:5]
-
+            # ------------------------------
+            # 3. LLM 최종 선택 (안정화)
+            # ------------------------------
             movie_text = "\n".join(
                 [f"{i+1}. {m['title']}: {m.get('overview','')}" for i, m in enumerate(movies)]
             )
 
-            # --------------------------------------
-            # 3. LLM 최종 1편 선택
-            # --------------------------------------
             final_prompt = f"""
-            사용자 감정:
-            {user_input}
+            아래 영화 중 하나만 골라.
+            숫자와 이유만 JSON으로 응답해.
 
-            후보 영화 목록:
-            {movie_text}
-
-            이 중 단 하나만 골라.
-            반드시 JSON으로만 응답해.
             {{
               "index": 1,
-              "reason": "추천 이유"
+              "reason": "..."
             }}
+
+            영화 목록:
+            {movie_text}
             """
 
-            try:
-                final_res = client.responses.create(
-                    model="gpt-4o-mini",
-                    input=final_prompt
-                )
-                decision = json.loads(final_res.output_text)
-            except Exception as e:
-                st.error("최종 추천 중 오류가 발생했어요.")
-                st.caption(str(e))
-                st.stop()
+            final_res = client.responses.create(
+                model="gpt-4o-mini",
+                input=final_prompt
+            )
 
-            st.session_state.final_movie = movies[decision["index"] - 1]
-            st.session_state.reason = empathy + " " + decision["reason"]
+            match = re.search(r"\{.*\}", final_res.output_text, re.S)
 
+            if match:
+                decision = json.loads(match.group())
+                idx = max(1, min(decision["index"], len(movies))) - 1
+                reason = decision["reason"]
+            else:
+                idx = 0
+                reason = "지금 기분에 가장 무난하게 어울리는 영화예요."
+
+            st.session_state.final_movie = movies[idx]
+            st.session_state.reason = empathy + " " + reason
             st.rerun()
 
 # ==================================================
@@ -222,8 +239,13 @@ if st.session_state.final_movie:
             st.image(TMDB_IMAGE + movie["poster_path"], use_container_width=True)
 
         st.link_button(
-            "🎬 영화 상세 페이지",
+            "🎬 영화 정보 보기",
             TMDB_MOVIE_URL + str(movie["id"])
+        )
+
+        st.link_button(
+            "🎥 공식 트레일러 보러가기",
+            TMDB_YOUTUBE + movie["title"] + " trailer"
         )
 
     with col2:
