@@ -3,9 +3,9 @@ import requests
 import json
 from openai import OpenAI
 
-# ===============================
+# ==================================================
 # 기본 설정
-# ===============================
+# ==================================================
 st.set_page_config(
     page_title="🎬 오늘의 영화 상담소",
     page_icon="🎬",
@@ -15,17 +15,27 @@ st.set_page_config(
 TMDB_IMAGE = "https://image.tmdb.org/t/p/w342"
 TMDB_MOVIE_URL = "https://www.themoviedb.org/movie/"
 
-# ===============================
-# 사이드바
-# ===============================
+# ==================================================
+# 사이드바 (무조건 입력)
+# ==================================================
 st.sidebar.title("🔑 API 설정")
 
-tmdb_key = st.sidebar.text_input("TMDB API Key", type="password")
-openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
+openai_key = st.sidebar.text_input(
+    "OpenAI API Key",
+    type="password",
+    help="sk- 로 시작하는 OpenAI API Key"
+)
+
+tmdb_key = st.sidebar.text_input(
+    "TMDB API Key",
+    type="password"
+)
 
 st.sidebar.markdown("---")
 
+# ==================================================
 # 찜 목록
+# ==================================================
 if "wishlist" not in st.session_state:
     st.session_state.wishlist = []
 
@@ -36,37 +46,36 @@ if st.session_state.wishlist:
 else:
     st.sidebar.caption("아직 찜한 영화가 없어요")
 
-# ===============================
-# OpenAI Client
-# ===============================
-client = OpenAI(api_key=openai_key) if openai_key else None
+# ==================================================
+# OpenAI client 생성 함수 (⭐ 핵심)
+# ==================================================
+def get_openai_client():
+    if not openai_key:
+        st.error("⚠️ OpenAI API Key를 사이드바에 입력해주세요.")
+        st.stop()
+    return OpenAI(api_key=openai_key)
 
-# ===============================
+# ==================================================
 # 세션 상태
-# ===============================
-if "question" not in st.session_state:
-    st.session_state.question = None
-if "final_movie" not in st.session_state:
-    st.session_state.final_movie = None
-if "reason" not in st.session_state:
-    st.session_state.reason = None
+# ==================================================
+for key in ["question", "final_movie", "reason"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
-# ===============================
+# ==================================================
 # 제목
-# ===============================
+# ==================================================
 st.title("🎬 오늘의 영화 상담소")
 st.caption("지금 기분을 말해주면, 오늘 당신에게 딱 맞는 영화 하나를 골라드릴게요.")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ===============================
+# ==================================================
 # 1️⃣ 상담 질문 생성
-# ===============================
+# ==================================================
 if st.session_state.question is None:
     if st.button("🗨️ 상담 시작하기"):
-        if not client:
-            st.error("OpenAI API Key를 입력해주세요.")
-            st.stop()
+        client = get_openai_client()
 
         with st.spinner("상담 질문을 준비 중이에요..."):
             try:
@@ -76,13 +85,14 @@ if st.session_state.question is None:
                 )
                 st.session_state.question = res.output_text.strip()
                 st.rerun()
-            except Exception:
-                st.error("OpenAI API 인증에 실패했어요. API Key와 모델 권한을 확인해주세요.")
+            except Exception as e:
+                st.error("OpenAI API 인증에 실패했어요.")
+                st.caption(str(e))
                 st.stop()
 
-# ===============================
-# 2️⃣ 사용자 답변 입력
-# ===============================
+# ==================================================
+# 2️⃣ 사용자 답변
+# ==================================================
 if st.session_state.question:
     st.markdown(f"### 💬 {st.session_state.question}")
     user_input = st.text_input("당신의 이야기")
@@ -92,14 +102,16 @@ if st.session_state.question:
             st.warning("조금만 더 이야기해줘도 좋아요 🙂")
             st.stop()
 
-        if not tmdb_key or not client:
-            st.error("TMDB / OpenAI API Key가 모두 필요해요.")
+        if not tmdb_key:
+            st.error("TMDB API Key를 입력해주세요.")
             st.stop()
 
+        client = get_openai_client()
+
         with st.spinner("당신의 마음을 이해하고 있어요..."):
-            # -------------------------------
+            # --------------------------------------
             # 1. 감정 공감 + 장르 결정
-            # -------------------------------
+            # --------------------------------------
             analysis_prompt = f"""
             사용자의 말을 보고 공감 한 문장과
             어울리는 영화 장르 1개를 골라줘.
@@ -117,15 +129,23 @@ if st.session_state.question:
             "{user_input}"
             """
 
-            analysis_res = client.responses.create(
-                model="gpt-4o-mini",
-                input=analysis_prompt
-            )
+            try:
+                analysis_res = client.responses.create(
+                    model="gpt-4o-mini",
+                    input=analysis_prompt
+                )
+                analysis = json.loads(analysis_res.output_text)
+            except Exception as e:
+                st.error("감정 분석 중 오류가 발생했어요.")
+                st.caption(str(e))
+                st.stop()
 
-            analysis = json.loads(analysis_res.output_text)
             empathy = analysis["empathy"]
             genre = analysis["genre"]
 
+            # --------------------------------------
+            # 2. TMDB 후보 영화 수집
+            # --------------------------------------
             genre_id_map = {
                 "액션": 28,
                 "코미디": 35,
@@ -137,9 +157,6 @@ if st.session_state.question:
 
             genre_id = genre_id_map.get(genre, 18)
 
-            # -------------------------------
-            # 2. TMDB 후보 영화 수집
-            # -------------------------------
             discover_url = (
                 f"https://api.themoviedb.org/3/discover/movie"
                 f"?api_key={tmdb_key}"
@@ -155,9 +172,9 @@ if st.session_state.question:
                 [f"{i+1}. {m['title']}: {m.get('overview','')}" for i, m in enumerate(movies)]
             )
 
-            # -------------------------------
+            # --------------------------------------
             # 3. LLM 최종 1편 선택
-            # -------------------------------
+            # --------------------------------------
             final_prompt = f"""
             사용자 감정:
             {user_input}
@@ -173,21 +190,25 @@ if st.session_state.question:
             }}
             """
 
-            final_res = client.responses.create(
-                model="gpt-4o-mini",
-                input=final_prompt
-            )
-
-            decision = json.loads(final_res.output_text)
+            try:
+                final_res = client.responses.create(
+                    model="gpt-4o-mini",
+                    input=final_prompt
+                )
+                decision = json.loads(final_res.output_text)
+            except Exception as e:
+                st.error("최종 추천 중 오류가 발생했어요.")
+                st.caption(str(e))
+                st.stop()
 
             st.session_state.final_movie = movies[decision["index"] - 1]
             st.session_state.reason = empathy + " " + decision["reason"]
 
             st.rerun()
 
-# ===============================
+# ==================================================
 # 3️⃣ 결과 화면
-# ===============================
+# ==================================================
 if st.session_state.final_movie:
     movie = st.session_state.final_movie
 
