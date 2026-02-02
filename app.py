@@ -34,7 +34,6 @@ if prompt := st.chat_input("메시지를 입력하세요"):
             )
             reply = response.choices[0].message.content
             st.markdown(reply)
-=======
 import streamlit as st
 from openai import OpenAI
 
@@ -71,5 +70,4 @@ if prompt := st.chat_input("메시지를 입력하세요"):
             )
             reply = response.choices[0].message.content
             st.markdown(reply)
->>>>>>> d639d8e61760a2bf61429a6df9a46a637faef261
             st.session_state.messages.append({"role": "assistant", "content": reply})
