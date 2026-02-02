@@ -1,230 +1,145 @@
 import streamlit as st
 import requests
-import random
-import json
-import re
-from openai import OpenAI
 
-# -----------------------------
+# =============================
 # 기본 설정
-# -----------------------------
-st.set_page_config(page_title="🎬 영화 상담 추천", layout="wide")
+# =============================
+st.set_page_config(page_title="🎬 영화 추천 통합 앱", layout="wide")
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 POSTER_BASE = "https://image.tmdb.org/t/p/w342"
 
-GENRES = {
-    "로맨스/드라마": [18, 10749],
-    "액션/어드벤처": [28],
-    "SF/판타지": [878, 14],
-    "코미디": [35]
+# =============================
+# 장르 설정
+# =============================
+GENRE_IDS = {
+    "액션": 28,
+    "코미디": 35,
+    "SF": 878,
+    "드라마": 18,
+    "로맨스": 10749,
+    "판타지": 14
 }
 
-COUNTRY_MAP = {
-    "전체": None,
-    "한국": "KR",
-    "미국": "US",
-    "영어권": "US|GB|CA|AU"
+GENRE_MOOD_KEYWORDS = {
+    "액션": "action adventure energy",
+    "로맨스": "romantic sunset love",
+    "SF": "space galaxy stars",
+    "코미디": "happy fun colorful",
+    "드라마": "emotional rain cinematic",
+    "판타지": "fantasy magical forest"
 }
 
-# -----------------------------
-# Session State 초기화
-# -----------------------------
-for key in [
-    "question", "answer", "movies",
-    "final_movie", "reason", "wishlist"
-]:
-    if key not in st.session_state:
-        st.session_state[key] = None if key != "wishlist" else []
-
-# -----------------------------
+# =============================
 # 사이드바
-# -----------------------------
-st.sidebar.header("🔑 API 설정")
+# =============================
+st.sidebar.header("🔑 API 키 입력")
 
 tmdb_key = st.sidebar.text_input("TMDB API Key", type="password")
-openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
+unsplash_key = st.sidebar.text_input("Unsplash Access Key", type="password")
 
 st.sidebar.divider()
-st.sidebar.header("🎛️ 추천 조건")
+genre = st.sidebar.selectbox("🎭 오늘의 장르", list(GENRE_IDS.keys()))
 
-min_rating = st.sidebar.slider("⭐ 최소 평점", 5.0, 9.0, 6.5, 0.5)
-year_range = st.sidebar.slider("📅 개봉 연도", 1990, 2025, (2010, 2024))
-country = st.sidebar.selectbox("🌍 국가", ["전체", "한국", "미국", "영어권"])
+# =============================
+# Unsplash 분위기 이미지
+# =============================
+def get_mood_image(genre, access_key):
+    query = GENRE_MOOD_KEYWORDS.get(genre, "movie cinema mood")
 
-st.sidebar.divider()
-st.sidebar.header("❤️ 찜한 영화")
-
-if st.session_state.wishlist:
-    for m in st.session_state.wishlist:
-        st.sidebar.write("•", m)
-else:
-    st.sidebar.caption("아직 찜한 영화가 없어요")
-
-# -----------------------------
-# OpenAI Client
-# -----------------------------
-def get_openai_client():
-    if not openai_key:
-        st.error("OpenAI API Key를 입력해주세요.")
-        st.stop()
-    return OpenAI(api_key=openai_key)
-
-# -----------------------------
-# TMDB 영화 검색
-# -----------------------------
-def discover_movies(genre_ids):
+    url = "https://api.unsplash.com/search/photos"
     params = {
-        "api_key": tmdb_key,
-        "language": "ko-KR",
-        "with_genres": ",".join(map(str, genre_ids)),
-        "vote_average.gte": min_rating,
-        "primary_release_date.gte": f"{year_range[0]}-01-01",
-        "primary_release_date.lte": f"{year_range[1]}-12-31",
-        "sort_by": "vote_average.desc"
+        "query": query,
+        "client_id": access_key,
+        "per_page": 1,
+        "orientation": "landscape"
     }
 
-    country_code = COUNTRY_MAP.get(country)
-    if country_code:
-        params["with_origin_country"] = country_code
+    try:
+        res = requests.get(url, params=params, timeout=5)
+        data = res.json()
+        if data.get("results"):
+            return data["results"][0]["urls"]["regular"]
+    except Exception:
+        pass
 
-    movies = requests.get(
-        f"{TMDB_BASE}/discover/movie",
-        params=params
-    ).json().get("results", [])[:5]
-
-    # 🔥 국가 제한 fallback
-    if not movies and country != "전체":
-        st.info("국가 제한을 해제하고 다시 찾아볼게요 🙂")
-        relaxed_params = params.copy()
-        relaxed_params.pop("with_origin_country", None)
-
-        movies = requests.get(
-            f"{TMDB_BASE}/discover/movie",
-            params=relaxed_params
-        ).json().get("results", [])[:5]
-
-    return movies
-
-# -----------------------------
-# 유튜브 트레일러 링크
-# -----------------------------
-def youtube_trailer_link(movie_id):
-    res = requests.get(
-        f"{TMDB_BASE}/movie/{movie_id}/videos",
-        params={"api_key": tmdb_key, "language": "ko-KR"}
-    ).json()
-
-    for v in res.get("results", []):
-        if v["site"] == "YouTube" and "Trailer" in v["type"]:
-            return f"https://www.youtube.com/watch?v={v['key']}"
     return None
 
-# -----------------------------
+# =============================
+# 통합 결과 함수
+# =============================
+def get_complete_result(genre, tmdb_key, unsplash_key):
+    result = {}
+
+    # 1️⃣ TMDB 영화 3편
+    tmdb_url = f"{TMDB_BASE}/discover/movie"
+    tmdb_params = {
+        "api_key": tmdb_key,
+        "language": "ko-KR",
+        "with_genres": GENRE_IDS[genre],
+        "sort_by": "popularity.desc"
+    }
+    tmdb_res = requests.get(tmdb_url, params=tmdb_params)
+    result["movies"] = tmdb_res.json().get("results", [])[:3]
+
+    # 2️⃣ Unsplash 분위기 이미지
+    result["mood_image"] = get_mood_image(genre, unsplash_key)
+
+    # 3️⃣ ZenQuotes 명언
+    quote_res = requests.get("https://zenquotes.io/api/random")
+    quote_data = quote_res.json()
+    result["quote"] = {
+        "content": quote_data[0]["q"],
+        "author": quote_data[0]["a"]
+    }
+
+    return result
+
+# =============================
 # 메인 UI
-# -----------------------------
-st.title("🎬 오늘의 기분으로 영화 추천")
+# =============================
+st.title("🎬 오늘의 장르별 영화 추천")
 
-# 1️⃣ 질문 생성
-if not st.session_state.question:
-    if st.button("🗨️ 상담 시작하기"):
-        client = get_openai_client()
-        with st.spinner("질문을 준비 중이에요..."):
-            res = client.responses.create(
-                model="gpt-4o-mini",
-                input="영화 추천을 위한 감정 상담 질문을 하나 만들어줘. 친구처럼 짧게."
-            )
-            st.session_state.question = res.output_text.strip()
-            st.rerun()
+st.caption("TMDB · Unsplash · ZenQuotes API를 하나로 결합한 추천 앱")
 
-# 2️⃣ 사용자 답변
-if st.session_state.question and not st.session_state.answer:
-    st.subheader("💬 질문")
-    st.markdown(f"### {st.session_state.question}")
-    answer = st.text_input("당신의 답변")
+if st.button("🎯 결과 보기"):
+    if not tmdb_key or not unsplash_key:
+        st.error("사이드바에 모든 API 키를 입력해주세요.")
+        st.stop()
 
-    if st.button("답변 제출"):
-        st.session_state.answer = answer
-        st.rerun()
+    with st.spinner("여러 API에서 데이터를 불러오는 중..."):
+        result = get_complete_result(genre, tmdb_key, unsplash_key)
 
-# 3️⃣ 영화 추천
-if st.session_state.answer and not st.session_state.final_movie:
-    client = get_openai_client()
+    # -------------------------
+    # 1️⃣ 상단: 장르 결과
+    # -------------------------
+    st.header(f"🎭 오늘의 장르: {genre}")
 
-    with st.spinner("당신의 마음을 이해하고 있어요..."):
-        genre_prompt = f"""
-        사용자의 감정에 가장 어울리는 영화 장르를 하나 골라줘.
-        선택지는: {list(GENRES.keys())}
-        답변: {st.session_state.answer}
+    # -------------------------
+    # 2️⃣ 중간: 영화 카드 3개
+    # -------------------------
+    st.subheader("🍿 추천 영화")
+
+    cols = st.columns(3)
+    for col, movie in zip(cols, result["movies"]):
+        with col:
+            if movie.get("poster_path"):
+                st.image(POSTER_BASE + movie["poster_path"])
+            st.markdown(f"**{movie['title']}**")
+            st.write("⭐ 평점:", movie["vote_average"])
+
+    # -------------------------
+    # 3️⃣ 하단: 분위기 이미지 + 명언
+    # -------------------------
+    st.subheader("🎨 오늘의 분위기")
+
+    if result["mood_image"]:
+        st.image(result["mood_image"], use_container_width=True)
+
+    quote = result["quote"]
+    st.markdown(
+        f"""
+        > *{quote['content']}*  
+        > — **{quote['author']}**
         """
-
-        genre_res = client.responses.create(
-            model="gpt-4o-mini",
-            input=genre_prompt
-        )
-
-        chosen_genre = next(
-            (g for g in GENRES if g in genre_res.output_text),
-            random.choice(list(GENRES.keys()))
-        )
-
-        movies = discover_movies(GENRES[chosen_genre])
-
-        if not movies:
-            st.error("조건에 맞는 영화를 찾지 못했어요 😢")
-            st.stop()
-
-        final_prompt = f"""
-        아래 영화 중 사용자에게 가장 어울리는 하나를 골라줘.
-        1~{len(movies)} 번호로 선택하고 이유도 써줘.
-        {json.dumps(movies, ensure_ascii=False)}
-        """
-
-        final_res = client.responses.create(
-            model="gpt-4o-mini",
-            input=final_prompt
-        )
-
-        match = re.search(r"\{.*\}", final_res.output_text, re.S)
-        if match:
-            decision = json.loads(match.group())
-            idx = decision.get("index", 1) - 1
-            reason = decision.get("reason", "")
-        else:
-            idx = 0
-            reason = "지금 기분에 가장 잘 어울리는 영화예요."
-
-        idx = max(0, min(idx, len(movies) - 1))
-
-        st.session_state.final_movie = movies[idx]
-        st.session_state.reason = reason
-        st.rerun()
-
-# 4️⃣ 결과 화면
-if st.session_state.final_movie:
-    m = st.session_state.final_movie
-
-    st.header(f"🎯 최종 추천: {m['title']}")
-    st.caption(st.session_state.reason)
-
-    cols = st.columns([1, 2])
-    with cols[0]:
-        st.image(POSTER_BASE + m["poster_path"])
-
-    with cols[1]:
-        st.write("⭐ 평점:", m["vote_average"])
-        st.write(m["overview"])
-
-        trailer = youtube_trailer_link(m["id"])
-        if trailer:
-            st.link_button("🎥 공식 트레일러 보러가기", trailer)
-
-        if st.button("❤️ 찜하기"):
-            if m["title"] not in st.session_state.wishlist:
-                st.session_state.wishlist.append(m["title"])
-                st.success("찜 목록에 추가했어요!")
-
-    if st.button("🔄 다시 추천받기"):
-        for k in ["question", "answer", "final_movie", "reason"]:
-            st.session_state[k] = None
-        st.rerun()
+    )
