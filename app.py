@@ -1,28 +1,32 @@
 import streamlit as st
 import requests
 from collections import Counter
+import time
 
-st.set_page_config(page_title="나와 어울리는 영화는?", page_icon="🎬", layout="wide")
+st.set_page_config(
+    page_title="나와 어울리는 영화는?",
+    page_icon="🎬",
+    layout="wide",
+)
 
-# ----------------------
-# Sidebar - TMDB API Key
-# ----------------------
+# ======================
+# Sidebar
+# ======================
 st.sidebar.title("🔑 TMDB API 설정")
-api_key = st.sidebar.text_input("TMDB API Key를 입력하세요", type="password")
+api_key = st.sidebar.text_input("TMDB API Key", type="password")
 
-# ----------------------
-# session_state 초기화
-# ----------------------
+# ======================
+# Session State 초기화
+# ======================
+if "step" not in st.session_state:
+    st.session_state.step = 0  # 0~4 질문, 5=로딩, 6=결과
+
 if "answers" not in st.session_state:
     st.session_state.answers = {}
 
-if "show_result" not in st.session_state:
-    st.session_state.show_result = False
-
-
-# ----------------------
+# ======================
 # 장르 매핑
-# ----------------------
+# ======================
 choice_to_genre = {
     "감정선을 건드리는 영화 한 편 보며 혼자 여운에 잠긴다": "드라마",
     "몸이 좀 피곤해도 친구들이랑 액티비티나 게임을 즐긴다": "액션",
@@ -60,132 +64,142 @@ genre_id_map = {
 }
 
 genre_reason = {
-    "액션": "에너지 넘치고 몰입감 강한 전개를 선호하는 성향이에요.",
-    "코미디": "영화는 역시 웃기고 편해야 한다고 생각하는 타입이에요.",
-    "드라마": "감정선과 이야기에 깊이 공감하는 섬세한 취향이에요.",
-    "SF": "상상력과 새로운 세계관에 끌리는 타입이에요.",
-    "로맨스": "감정과 관계의 흐름을 중요하게 여기는 성향이에요.",
+    "액션": "에너지 넘치고 몰입감 강한 전개를 좋아하는 당신!",
+    "코미디": "웃음이 최고인 힐링형 영화 취향이에요.",
+    "드라마": "감정선과 이야기에 깊이 공감하는 타입이에요.",
+    "SF": "상상력과 새로운 세계관에 끌리는 당신!",
+    "로맨스": "감정과 관계의 흐름을 중요하게 여겨요.",
     "판타지": "현실을 벗어난 세계에서 즐거움을 찾는 타입이에요.",
 }
 
-# ----------------------
-# 제목 & 소개
-# ----------------------
-st.title("🎬 나와 어울리는 영화는?")
-st.write("간단한 질문을 통해 당신에게 딱 맞는 영화를 추천해드릴게요!")
-
-st.divider()
-
-# ----------------------
-# 질문
-# ----------------------
+# ======================
+# 질문 데이터
+# ======================
 questions = [
-    ("Q1. 하루 종일 강의가 끝난 후, 저녁에 가장 하고 싶은 것은?",
-     [
-         "감정선을 건드리는 영화 한 편 보며 혼자 여운에 잠긴다",
-         "몸이 좀 피곤해도 친구들이랑 액티비티나 게임을 즐긴다",
-         "현실을 잠시 잊을 수 있는 세계관 속으로 빠져들고 싶다",
-         "아무 생각 없이 웃을 수 있는 콘텐츠를 틀어놓는다",
-     ]),
-    ("Q2. 시험이 끝난 직후, 당신의 기분과 가장 가까운 상태는?",
-     [
-         "“수고했다”는 말이 어울리는 잔잔한 감정",
-         "해방감 MAX! 지금 당장 뭐든 할 수 있을 것 같다",
-         "이제 새로운 스테이지로 넘어간 느낌",
-         "드디어 밈과 웃긴 영상 볼 시간이 생겼다",
-     ]),
-    ("Q3. 여행을 간다면 가장 끌리는 여행 스타일은?",
-     [
-         "감성적인 카페와 풍경을 천천히 즐기는 여행",
-         "액티비티 가득한 일정, 가만히 있는 건 못 참는다",
-         "이국적이거나 비현실적인 분위기의 장소 탐방",
-         "계획은 대충, 웃긴 에피소드가 많이 생기는 여행",
-     ]),
-    ("Q4. 친구가 “너 요즘 무슨 생각해?”라고 물어본다면?",
-     [
-         "요즘 인간관계나 감정에 대해 생각이 많아",
-         "다음에 뭘 해볼지, 목표 같은 게 머릿속에 있다",
-         "세상이나 미래, 가능성 같은 상상을 자주 한다",
-         "솔직히 별생각 안 하고 살고 있음 ㅋㅋ",
-     ]),
-    ("Q5. 당신이 영화에서 가장 중요하게 여기는 요소는?",
-     [
-         "인물의 감정과 현실적인 이야기",
-         "긴장감 넘치는 전개와 시원한 장면",
-         "독특한 세계관과 상상력을 자극하는 설정",
-         "웃음 포인트와 가볍게 즐길 수 있는 분위기",
-     ]),
+    (
+        "하루 종일 강의가 끝난 후, 저녁에 가장 하고 싶은 것은?",
+        [
+            "감정선을 건드리는 영화 한 편 보며 혼자 여운에 잠긴다",
+            "몸이 좀 피곤해도 친구들이랑 액티비티나 게임을 즐긴다",
+            "현실을 잠시 잊을 수 있는 세계관 속으로 빠져들고 싶다",
+            "아무 생각 없이 웃을 수 있는 콘텐츠를 틀어놓는다",
+        ],
+    ),
+    (
+        "시험이 끝난 직후, 당신의 기분과 가장 가까운 상태는?",
+        [
+            "“수고했다”는 말이 어울리는 잔잔한 감정",
+            "해방감 MAX! 지금 당장 뭐든 할 수 있을 것 같다",
+            "이제 새로운 스테이지로 넘어간 느낌",
+            "드디어 밈과 웃긴 영상 볼 시간이 생겼다",
+        ],
+    ),
+    (
+        "여행을 간다면 가장 끌리는 여행 스타일은?",
+        [
+            "감성적인 카페와 풍경을 천천히 즐기는 여행",
+            "액티비티 가득한 일정, 가만히 있는 건 못 참는다",
+            "이국적이거나 비현실적인 분위기의 장소 탐방",
+            "계획은 대충, 웃긴 에피소드가 많이 생기는 여행",
+        ],
+    ),
+    (
+        "친구가 “너 요즘 무슨 생각해?”라고 물어본다면?",
+        [
+            "요즘 인간관계나 감정에 대해 생각이 많아",
+            "다음에 뭘 해볼지, 목표 같은 게 머릿속에 있다",
+            "세상이나 미래, 가능성 같은 상상을 자주 한다",
+            "솔직히 별생각 안 하고 살고 있음 ㅋㅋ",
+        ],
+    ),
+    (
+        "당신이 영화에서 가장 중요하게 여기는 요소는?",
+        [
+            "인물의 감정과 현실적인 이야기",
+            "긴장감 넘치는 전개와 시원한 장면",
+            "독특한 세계관과 상상력을 자극하는 설정",
+            "웃음 포인트와 가볍게 즐길 수 있는 분위기",
+        ],
+    ),
 ]
 
-for idx, (q, opts) in enumerate(questions, start=1):
-    st.session_state.answers[f"q{idx}"] = st.radio(
-        q, opts, index=None, key=f"q{idx}"
-    )
+# ======================
+# 제목
+# ======================
+st.title("🎬 나와 어울리는 영화는?")
+st.caption("질문에 답하면, 당신에게 딱 맞는 영화를 추천해드려요 🍿")
 
 st.divider()
 
-# ----------------------
-# 버튼
-# ----------------------
-col1, col2 = st.columns(2)
+# ======================
+# 질문 화면 (슬라이드)
+# ======================
+if st.session_state.step < len(questions):
+    q_text, options = questions[st.session_state.step]
 
-with col1:
-    if st.button("결과 보기"):
-        st.session_state.show_result = True
+    st.markdown(f"### Q{st.session_state.step + 1}")
+    answer = st.radio(q_text, options, index=None)
 
-with col2:
-    if st.button("다시 테스트하기"):
-        st.session_state.clear()
+    if answer:
+        st.session_state.answers[st.session_state.step] = answer
+
+        if st.button("다음 ➡️"):
+            st.session_state.step += 1
+            st.rerun()
+
+# ======================
+# 로딩 화면
+# ======================
+elif st.session_state.step == len(questions):
+    with st.spinner("🎥 당신에게 어울리는 영화를 찾고 있어요..."):
+        time.sleep(2)
+        st.session_state.step += 1
         st.rerun()
 
-# ----------------------
+# ======================
 # 결과 화면
-# ----------------------
-if st.session_state.show_result:
+# ======================
+else:
     if not api_key:
-        st.warning("⚠️ 사이드바에 TMDB API Key를 입력해 주세요.")
+        st.warning("TMDB API Key를 입력해 주세요.")
     else:
-        with st.spinner("🎥 당신에게 어울리는 영화를 찾는 중..."):
-            genres = [
-                choice_to_genre.get(answer)
-                for answer in st.session_state.answers.values()
-                if answer
-            ]
+        genres = [
+            choice_to_genre[a] for a in st.session_state.answers.values()
+        ]
+        final_genre = Counter(genres).most_common(1)[0][0]
+        genre_id = genre_id_map[final_genre]
 
-            final_genre = Counter(genres).most_common(1)[0][0]
-            genre_id = genre_id_map[final_genre]
-
-            url = (
-                f"https://api.themoviedb.org/3/discover/movie"
-                f"?api_key={api_key}&with_genres={genre_id}&language=ko-KR"
-            )
-            response = requests.get(url).json()
-            movies = response.get("results", [])[:5]
-
-        # 결과 제목
         st.markdown(
-            f"## 🎯 당신에게 딱인 장르는: **{final_genre}**!"
+            f"## 🎯 당신에게 딱인 장르는 **{final_genre}**!"
         )
         st.write(genre_reason[final_genre])
 
+        url = (
+            f"https://api.themoviedb.org/3/discover/movie"
+            f"?api_key={api_key}&with_genres={genre_id}&language=ko-KR"
+        )
+        movies = requests.get(url).json().get("results", [])[:5]
+
         st.markdown("### 🍿 추천 영화")
 
-        # 영화 카드 (3열)
         cols = st.columns(3)
-
-        for idx, movie in enumerate(movies):
-            with cols[idx % 3]:
+        for i, movie in enumerate(movies):
+            with cols[i % 3]:
                 if movie.get("poster_path"):
                     st.image(
                         "https://image.tmdb.org/t/p/w500" + movie["poster_path"],
                         use_container_width=True,
                     )
-
                 st.markdown(f"**{movie['title']}**")
                 st.write(f"⭐ {movie['vote_average']}")
 
                 with st.expander("자세히 보기"):
                     st.write(movie["overview"] or "줄거리 정보가 없습니다.")
                     st.caption(
-                        f"👉 이 영화는 **{final_genre}** 장르의 매력을 잘 보여줘요!"
+                        f"이 영화는 당신의 **{final_genre}** 취향과 잘 어울려요 💖"
                     )
+
+        st.divider()
+        if st.button("🔄 다시 테스트하기"):
+            st.session_state.clear()
+            st.rerun()
