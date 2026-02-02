@@ -112,7 +112,7 @@ def get_quote():
     return q["q"], q["a"]
 
 # =====================
-# OpenAI 해석 스트리밍
+# OpenAI 스트리밍 해석 (🔥 수정된 부분)
 # =====================
 def stream_ai_analysis(user_text, movie, quote):
     client = OpenAI(api_key=openai_key)
@@ -140,12 +140,13 @@ def stream_ai_analysis(user_text, movie, quote):
     )
 
     placeholder = st.empty()
-    text = ""
+    full_text = ""
 
     for chunk in stream:
-        if chunk.choices[0].delta.get("content"):
-            text += chunk.choices[0].delta.content
-            placeholder.markdown(text)
+        delta = chunk.choices[0].delta
+        if hasattr(delta, "content") and delta.content:
+            full_text += delta.content
+            placeholder.markdown(full_text)
             time.sleep(0.02)
 
 # =====================
@@ -186,7 +187,6 @@ else:
     r = st.session_state.result
 
     st.header(f"🎭 당신에게 딱인 장르는 **{r['analysis']['genre']}**")
-
     st.info(r["analysis"]["personality"])
 
     st.divider()
