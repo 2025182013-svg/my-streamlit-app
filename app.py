@@ -46,15 +46,18 @@ for k in ["answer", "result"]:
         st.session_state[k] = None
 
 # =============================
-# 사이드바
+# 사이드바 (API 키만)
 # =============================
 st.sidebar.header("🔑 API 설정")
 tmdb_key = st.sidebar.text_input("TMDB API Key", type="password")
 unsplash_key = st.sidebar.text_input("Unsplash Access Key", type="password")
 openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
-st.sidebar.divider()
-genre = st.sidebar.selectbox("🎭 오늘의 장르", list(GENRE_IDS.keys()))
+# =============================
+# 메인 장르 선택
+# =============================
+st.title("🎬 AI 감정 기반 영화 추천")
+genre = st.selectbox("🎭 오늘의 장르를 골라주세요", list(GENRE_IDS.keys()))
 
 # =============================
 # CSS
@@ -84,10 +87,9 @@ st.markdown("""
 # Unsplash
 # =============================
 def get_mood_image(genre):
-    query = GENRE_MOOD_KEYWORDS.get(genre, "movie mood")
     url = "https://api.unsplash.com/search/photos"
     params = {
-        "query": query,
+        "query": GENRE_MOOD_KEYWORDS.get(genre, "movie mood"),
         "client_id": unsplash_key,
         "per_page": 1,
         "orientation": "landscape"
@@ -104,7 +106,6 @@ def get_mood_image(genre):
 def get_complete_result():
     result = {}
 
-    # TMDB
     tmdb_res = requests.get(
         f"{TMDB_BASE}/discover/movie",
         params={
@@ -116,18 +117,13 @@ def get_complete_result():
     ).json()
 
     result["movies"] = tmdb_res.get("results", [])[:3]
-
-    # Unsplash
     result["mood_image"] = get_mood_image(genre)
-
-    # ZenQuotes
-    quote = requests.get("https://zenquotes.io/api/random").json()[0]
-    result["quote"] = quote
+    result["quote"] = requests.get("https://zenquotes.io/api/random").json()[0]
 
     return result
 
 # =============================
-# OpenAI 스트리밍 해석
+# OpenAI 스트리밍 해석 (에러 수정 완료)
 # =============================
 def stream_ai_analysis(answer, movies, quote):
     client = OpenAI(api_key=openai_key)
@@ -136,46 +132,39 @@ def stream_ai_analysis(answer, movies, quote):
 사용자 답변: {answer}
 
 1. 성향 분석 2~3문장
-2. 아래 영화들을 왜 추천하는지 1~2문장
-3. 명언 "{quote['q']}"을 사용자 성향에 맞게 해석 1문장
+2. 추천 영화 이유 1~2문장
+3. 명언 "{quote['q']}" 해석 1문장
 
 영화 목록:
 {[m['title'] for m in movies]}
 """
 
-    stream = client.responses.stream(
+    placeholder = st.empty()
+    full_text = ""
+
+    with client.responses.stream(
         model="gpt-4o-mini",
         input=prompt
-    )
-
-    text = ""
-    placeholder = st.empty()
-
-    for event in stream:
-        if event.type == "response.output_text.delta":
-            text += event.delta
-            placeholder.markdown(text)
-            time.sleep(0.02)
-
-    return text
+    ) as stream:
+        for event in stream:
+            if event.type == "response.output_text.delta":
+                full_text += event.delta
+                placeholder.markdown(full_text)
+                time.sleep(0.02)
 
 # =============================
-# UI
+# UI 입력
 # =============================
-st.title("🎬 AI 감정 기반 영화 추천")
-
-if not st.session_state.answer:
-    st.subheader("💬 오늘 기분은 어때요?")
-    st.session_state.answer = st.text_input("자유롭게 적어주세요")
+st.subheader("💬 지금 기분을 자유롭게 적어주세요")
+st.session_state.answer = st.text_input("")
 
 if st.button("🎯 결과 보기"):
     if not (tmdb_key and unsplash_key and openai_key):
         st.error("모든 API 키를 입력해주세요.")
         st.stop()
 
-    with st.spinner("결과를 분석 중이에요..."):
-        result = get_complete_result()
-        st.session_state.result = result
+    with st.spinner("AI가 분석 중이에요..."):
+        st.session_state.result = get_complete_result()
 
 # =============================
 # 결과 화면
@@ -184,26 +173,17 @@ if st.session_state.result:
     r = st.session_state.result
 
     st.divider()
-    icon = GENRE_ICONS.get(genre, "🎬")
-    st.header(f"{icon} 당신에게 딱인 장르는 {genre}!")
+    st.header(f"{GENRE_ICONS[genre]} 당신에게 딱인 장르는 {genre}!")
 
-    # AI 분석
-    with st.container():
-        st.markdown('<div class="callout">', unsafe_allow_html=True)
-        st.subheader("🤖 AI 분석 결과")
-        stream_ai_analysis(
-            st.session_state.answer,
-            r["movies"],
-            r["quote"]
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<div class="callout">', unsafe_allow_html=True)
+    st.subheader("🤖 AI 분석 결과")
+    stream_ai_analysis(st.session_state.answer, r["movies"], r["quote"])
+    st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
-
-    # 영화 카드
     st.subheader("🍿 추천 영화")
-    cols = st.columns(3)
 
+    cols = st.columns(3)
     for col, m in zip(cols, r["movies"]):
         with col:
             st.markdown('<div class="movie-card">', unsafe_allow_html=True)
@@ -211,19 +191,15 @@ if st.session_state.result:
                 st.image(POSTER_BASE + m["poster_path"])
             st.markdown(f"**{m['title']}**")
             st.write("⭐", m["vote_average"])
-
             with st.expander("상세 정보"):
                 st.write(m["overview"])
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
-
-    # 분위기
     st.subheader("🎨 오늘의 무드")
     if r["mood_image"]:
         st.image(r["mood_image"], use_container_width=True)
 
-    # 명언
     st.subheader("💬 오늘의 명언")
     st.markdown(
         f"""
@@ -234,15 +210,3 @@ if st.session_state.result:
         """,
         unsafe_allow_html=True
     )
-
-    st.divider()
-
-    # 하단 버튼
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🔄 다시 테스트하기"):
-            st.session_state.answer = None
-            st.session_state.result = None
-            st.rerun()
-    with col2:
-        st.button("📤 결과 공유하기")
