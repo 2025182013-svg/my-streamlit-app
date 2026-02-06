@@ -5,7 +5,7 @@ import time
 from openai import OpenAI
 
 # =====================
-# 기본 설정
+# 기본
 # =====================
 st.set_page_config(page_title="🎬 오늘의 기분 영화 추천", layout="wide")
 
