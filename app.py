@@ -12,13 +12,12 @@ st.set_page_config(page_title="RefNote AI", layout="wide")
 # Sidebar - API Keys
 # =====================
 st.sidebar.title("🔐 API Keys")
-
 openai_api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 naver_client_id = st.sidebar.text_input("Naver Client ID", type="password")
 naver_client_secret = st.sidebar.text_input("Naver Client Secret", type="password")
 
 if not (openai_api_key and naver_client_id and naver_client_secret):
-    st.warning("사이드바에 모든 API Key를 입력해주세요.")
+    st.warning("API Key를 모두 입력해주세요.")
     st.stop()
 
 client = OpenAI(api_key=openai_api_key)
@@ -26,7 +25,7 @@ client = OpenAI(api_key=openai_api_key)
 # =====================
 # Session State Init
 # =====================
-default_states = {
+state_defaults = {
     "questions": None,
     "keywords": None,
     "trend": None,
@@ -34,22 +33,33 @@ default_states = {
     "summaries": None,
     "shown": 5
 }
-for k, v in default_states.items():
+for k, v in state_defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # =====================
-# OpenAI Functions (gpt-4o-mini)
+# OpenAI Functions
 # =====================
 def generate_questions_and_keywords(topic, task_type):
     prompt = f"""
 주제: {topic}
 과제 유형: {task_type}
 
-1. 리서치 질문을 3개 작성해줘.
-2. 각 질문에 대응하는 뉴스 검색 키워드를 작성해줘.
-3. 최신 연구 동향 파악용 키워드 1개도 추가해줘.
+아래 형식을 반드시 지켜서 출력해줘.
+
+[리서치 질문]
+1. 질문 1
+2. 질문 2
+3. 질문 3
+
+[검색 키워드] (중요도 순, 5개)
+- 키워드1
+- 키워드2
+- 키워드3
+- 키워드4
+- 키워드5
 """
+
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
@@ -57,15 +67,21 @@ def generate_questions_and_keywords(topic, task_type):
     )
 
     text = res.choices[0].message.content
+
     questions, keywords = [], []
+    section = None
 
     for line in text.split("\n"):
         line = line.strip()
-        if line.startswith("-"):
-            if len(questions) < 3:
-                questions.append(line[1:].strip())
-            else:
-                keywords.append(line[1:].strip())
+
+        if "[리서치 질문]" in line:
+            section = "q"
+        elif "[검색 키워드]" in line:
+            section = "k"
+        elif section == "q" and line[:2].isdigit():
+            questions.append(line.split(".", 1)[1].strip())
+        elif section == "k" and line.startswith("-"):
+            keywords.append(line[1:].strip())
 
     return questions, keywords
 
@@ -73,7 +89,7 @@ def generate_questions_and_keywords(topic, task_type):
 def summarize_latest_trends(keywords):
     prompt = f"""
 다음 키워드를 기반으로 최신 연구 동향을 200~300자 이내로 요약해줘.
-키워드: {keywords}
+키워드: {", ".join(keywords)}
 """
     res = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -111,11 +127,7 @@ def search_naver_news(query, display=5):
         "X-Naver-Client-Id": naver_client_id,
         "X-Naver-Client-Secret": naver_client_secret
     }
-    params = {
-        "query": query,
-        "display": display,
-        "sort": "date"
-    }
+    params = {"query": query, "display": display, "sort": "date"}
     res = requests.get(url, headers=headers, params=params)
     if res.status_code == 200:
         return res.json().get("items", [])
@@ -165,12 +177,16 @@ if st.button("리서치 시작") and topic:
         st.session_state.shown = 5
 
 # =====================
-# Output (State 유지)
+# Output
 # =====================
 if st.session_state.questions:
     st.subheader("🔍 리서치 질문 (3개)")
     for q in st.session_state.questions:
         st.write("-", q)
+
+    st.subheader("🔑 사용된 검색 키워드 (중요도 순)")
+    for i, k in enumerate(st.session_state.keywords, 1):
+        st.write(f"{i}. {k}")
 
     st.subheader("🧠 최신 연구 동향 요약")
     st.write(st.session_state.trend)
