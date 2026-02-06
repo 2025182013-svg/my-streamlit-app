@@ -9,10 +9,10 @@ import pandas as pd
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("출처 기반 리서치 어시스턴트")
+st.caption("출처 기반 리서치 어시스턴트 (APA 7판 자동 정리)")
 
 # =====================
-# 세션 상태 초기화
+# 세션 상태
 # =====================
 if "results" not in st.session_state:
     st.session_state.results = None
@@ -20,7 +20,7 @@ if "history" not in st.session_state:
     st.session_state.history = []
 
 # =====================
-# 사이드바 - API 키
+# 사이드바 - API
 # =====================
 st.sidebar.header("🔑 API 설정")
 openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
@@ -45,6 +45,11 @@ def parse_date(d):
     except:
         return None
 
+def format_source(domain: str) -> str:
+    domain = domain.replace("www.", "")
+    base = domain.split(".")[0]
+    return base.capitalize()
+
 # =====================
 # AI 함수
 # =====================
@@ -52,7 +57,7 @@ def gen_questions(topic):
     prompt = f"다음 주제에 대한 연구 질문 3개를 불릿으로 생성:\n{topic}"
     r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role":"user","content":prompt}],
+        messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
     return [q.strip("- ").strip() for q in r.choices[0].message.content.split("\n") if q.strip()]
@@ -61,21 +66,21 @@ def gen_keywords(topic):
     prompt = f"다음 주제의 검색 키워드 5개를 중요도순으로 쉼표로 출력:\n{topic}"
     r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role":"user","content":prompt}],
+        messages=[{"role": "user", "content": prompt}],
         temperature=0.2
     )
     return [k.strip() for k in r.choices[0].message.content.split(",")]
 
 def relevance(topic, n):
     prompt = f"""
-    연구 주제: {topic}
-    뉴스 제목: {n['title']}
-    요약: {n['desc']}
-    관련도 0~3 숫자만 출력
-    """
+연구 주제: {topic}
+뉴스 제목: {n['title']}
+요약: {n['desc']}
+관련도 0~3 숫자만 출력
+"""
     r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role":"user","content":prompt}],
+        messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
     try:
@@ -96,7 +101,7 @@ def search_news(q):
     r = requests.get(url, headers=headers, params=params).json()
 
     out = []
-    for i in r["items"]:
+    for i in r.get("items", []):
         out.append({
             "title": clean(i["title"]),
             "desc": clean(i["description"]),
@@ -121,7 +126,7 @@ if st.button("🔍 리서치 시작") and topic:
 
         news_raw = []
         for k in kws[:2]:
-            news_raw += search_news(k)
+            news_raw.extend(search_news(k))
 
         filtered = []
         for n in news_raw:
@@ -134,12 +139,17 @@ if st.button("🔍 리서치 시작") and topic:
             {
                 "제목": n["title"],
                 "요약": n["desc"],
-                "출처": n["link"].split("/")[2],
+                "도메인": n["link"].split("/")[2],
+                "출처": format_source(n["link"].split("/")[2]),
                 "발행일": n["date"].strftime("%Y-%m-%d") if n["date"] else "",
+                "연도": n["date"].year if n["date"] else "",
                 "관련도": n["score"],
                 "링크": n["link"]
             } for n in filtered
         ])
+
+        # 🔑 링크 기준 중복 제거 (핵심)
+        df = df.drop_duplicates(subset=["링크"])
 
         st.session_state.results = {
             "topic": topic,
@@ -156,7 +166,7 @@ if st.button("🔍 리서치 시작") and topic:
 if st.session_state.results:
     r = st.session_state.results
 
-    st.subheader("🔍 리서치 질문 (3개)")
+    st.subheader("🔍 리서치 질문")
     for q in r["questions"]:
         st.markdown(f"• {q}")
 
@@ -174,15 +184,17 @@ if st.session_state.results:
     st.subheader("📊 근거 자료 테이블")
     st.dataframe(table, use_container_width=True)
 
-    st.subheader("📎 참고문헌 (APA 형식, TOP 10)")
-    for _, row in table.head(10).iterrows():
+    st.subheader("📎 참고문헌 (APA 7판 · 중복 제거)")
+    refs = table.drop_duplicates(subset=["링크"]).head(10)
+
+    for _, row in refs.iterrows():
         st.markdown(
-            f"- {row['출처']}. ({row['발행일'][:4]}). {row['제목']}. {row['링크']}"
+            f"- {row['출처']}. ({row['연도']}). {row['제목']}. {row['링크']}"
         )
 
 # =====================
 # 사이드바 - 히스토리
 # =====================
 st.sidebar.header("📂 리서치 히스토리")
-for h in st.session_state.history[::-1]:
+for h in reversed(st.session_state.history):
     st.sidebar.write(f"• {h}")
