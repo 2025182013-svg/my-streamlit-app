@@ -9,7 +9,7 @@ import pandas as pd
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("출처 기반 리서치 어시스턴트 (뉴스 + 연구동향 / DBpia 확장 준비)")
+st.caption("출처 기반 리서치 어시스턴트 (뉴스 · 연구동향 · DBpia 확장 준비)")
 
 # =====================
 # 세션 상태
@@ -52,6 +52,15 @@ def format_source(domain):
 # =====================
 # AI 함수
 # =====================
+def gen_questions(topic):
+    prompt = f"다음 주제에 대한 연구 질문 3개를 학술적으로 생성하세요."
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt + f"\n주제: {topic}"}],
+        temperature=0.3
+    )
+    return [q.strip("-• ").strip() for q in r.choices[0].message.content.split("\n") if q.strip()]
+
 def gen_keywords(topic):
     prompt = f"다음 주제의 핵심 검색 키워드 5개를 중요도순으로 쉼표로 출력:\n{topic}"
     r = client.chat.completions.create(
@@ -63,9 +72,9 @@ def gen_keywords(topic):
 
 def gen_trend_summary(keywords):
     prompt = f"""
-    다음 키워드를 바탕으로 최근 연구 동향을 학술적으로 요약하세요.
-    키워드: {', '.join(keywords)}
-    """
+다음 키워드를 바탕으로 최근 연구 동향을 학술 논문 서론 톤으로 요약하세요.
+키워드: {', '.join(keywords)}
+"""
     r = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
@@ -113,21 +122,9 @@ def search_news(q):
     return out
 
 # =====================
-# DBpia (미구현 – 구조만 유지)
+# DBpia (미구현)
 # =====================
 def search_dbpia(keyword):
-    """
-    TODO:
-    - DBpia API 연동 예정
-    - 반환 형식 예시:
-      {
-        "title": "",
-        "authors": "",
-        "journal": "",
-        "year": "",
-        "link": ""
-      }
-    """
     return []
 
 # =====================
@@ -141,42 +138,39 @@ task_type = st.selectbox("과제 유형", ["논문", "발표"])
 # =====================
 if st.button("🔍 리서치 시작") and topic:
     with st.spinner("리서치 진행 중..."):
+        questions = gen_questions(topic)
         keywords = gen_keywords(topic)
 
-        # 뉴스 수집
         news_raw = []
         for k in keywords[:2]:
             news_raw.extend(search_news(k))
 
-        # 관련도 필터
-        filtered_news = []
+        filtered = []
         for n in news_raw:
             s = relevance(topic, n)
             if s >= 2:
                 n["score"] = s
-                filtered_news.append(n)
+                filtered.append(n)
 
-        # 뉴스 DataFrame
         news_df = pd.DataFrame([
             {
                 "유형": "뉴스",
                 "제목": n["title"],
                 "요약": n["desc"],
                 "출처": format_source(n["link"].split("/")[2]),
+                "발행일": n["date"].strftime("%Y-%m-%d") if n["date"] else "",
                 "연도": n["date"].year if n["date"] else "",
                 "관련도": n["score"],
                 "링크": n["link"]
-            } for n in filtered_news
+            } for n in filtered
         ]).drop_duplicates(subset=["링크"])
-
-        # 연구 동향 요약
-        trend = gen_trend_summary(keywords)
 
         st.session_state.results = {
             "topic": topic,
+            "questions": questions,
             "keywords": keywords,
-            "news": news_df,
-            "trend": trend
+            "trend": gen_trend_summary(keywords),
+            "news": news_df
         }
         st.session_state.history.append(topic)
 
@@ -186,23 +180,35 @@ if st.button("🔍 리서치 시작") and topic:
 if st.session_state.results:
     r = st.session_state.results
 
+    st.subheader("🔍 리서치 질문")
+    for q in r["questions"]:
+        st.markdown(f"• {q}")
+
     st.subheader("🔑 핵심 키워드")
     st.write(", ".join(r["keywords"]))
 
-    st.subheader("📈 최신 연구 동향 요약")
+    st.subheader("📈 최신 연구 동향")
     st.markdown(r["trend"])
 
+    sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
+
+    table = r["news"]
+    if sort == "관련도순":
+        table = table.sort_values(by="관련도", ascending=False)
+    else:
+        table = table.sort_values(by="발행일", ascending=False)
+
     st.subheader("📰 뉴스 기반 근거 자료")
-    st.dataframe(r["news"], use_container_width=True)
+    st.dataframe(table, use_container_width=True)
 
     st.subheader("📎 참고문헌 (APA 7판 · 뉴스)")
-    for _, row in r["news"].head(10).iterrows():
+    for _, row in table.head(10).iterrows():
         st.markdown(
             f"- {row['출처']}. ({row['연도']}). {row['제목']}. {row['링크']}"
         )
 
 # =====================
-# 사이드바 - 히스토리
+# 히스토리
 # =====================
 st.sidebar.header("📂 리서치 히스토리")
 for h in reversed(st.session_state.history):
