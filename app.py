@@ -9,7 +9,7 @@ import pandas as pd
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("출처 기반 리서치 어시스턴트 (APA 7판 자동 정리)")
+st.caption("리서치 어시스턴트 (뉴스 + 학술 + 최신 연구 동향)")
 
 # =====================
 # 세션 상태
@@ -26,9 +26,10 @@ st.sidebar.header("🔑 API 설정")
 openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
 naver_id = st.sidebar.text_input("Naver Client ID", type="password")
 naver_secret = st.sidebar.text_input("Naver Client Secret", type="password")
+dbpia_key = st.sidebar.text_input("DBpia API Key", type="password")
 
 if not openai_key or not naver_id or not naver_secret:
-    st.warning("⬅️ 사이드바에 모든 API 키를 입력하세요.")
+    st.warning("⬅️ API 키들을 모두 입력하세요.")
     st.stop()
 
 client = OpenAI(api_key=openai_key)
@@ -36,57 +37,32 @@ client = OpenAI(api_key=openai_key)
 # =====================
 # 유틸
 # =====================
-def clean(t):
-    return html.unescape(t).replace("<b>", "").replace("</b>", "").strip()
-
+def clean(t): return html.unescape(t).replace("<b>", "").replace("</b>", "").strip()
 def parse_date(d):
     try:
         return datetime.strptime(d, "%a, %d %b %Y %H:%M:%S %z")
     except:
         return None
 
-def format_source(domain: str) -> str:
+def format_source(domain):
     domain = domain.replace("www.", "")
     base = domain.split(".")[0]
     return base.capitalize()
 
 # =====================
-# AI 함수
+# AI 서머리
 # =====================
-def gen_questions(topic):
-    prompt = f"다음 주제에 대한 연구 질문 3개를 불릿으로 생성:\n{topic}"
+def gen_trend_summary(keywords):
+    prompt = f"""
+    다음 키워드에 대한 최신 연구 동향을 요약하시오:
+    {', '.join(keywords)}
+    """
     r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    return [q.strip("- ").strip() for q in r.choices[0].message.content.split("\n") if q.strip()]
-
-def gen_keywords(topic):
-    prompt = f"다음 주제의 검색 키워드 5개를 중요도순으로 쉼표로 출력:\n{topic}"
-    r = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role":"user","content":prompt}],
         temperature=0.2
     )
-    return [k.strip() for k in r.choices[0].message.content.split(",")]
-
-def relevance(topic, n):
-    prompt = f"""
-연구 주제: {topic}
-뉴스 제목: {n['title']}
-요약: {n['desc']}
-관련도 0~3 숫자만 출력
-"""
-    r = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    try:
-        return int(r.choices[0].message.content.strip())
-    except:
-        return 0
+    return r.choices[0].message.content.strip()
 
 # =====================
 # 네이버 뉴스
@@ -99,7 +75,6 @@ def search_news(q):
     }
     params = {"query": q, "display": 30, "sort": "date"}
     r = requests.get(url, headers=headers, params=params).json()
-
     out = []
     for i in r.get("items", []):
         out.append({
@@ -111,53 +86,70 @@ def search_news(q):
     return out
 
 # =====================
-# UI 입력
+# DBpia 검색 함수 (나중에 채워)
 # =====================
-topic = st.text_input("어떤 주제로 자료를 준비하나요?")
-task_type = st.selectbox("과제 유형", ["논문", "발표"])
+def search_dbpia(q):
+    # TODO: DBpia API 연결
+    # 예) requests.get("DBpiaURL?apikey=...")
+    return []
 
 # =====================
 # 리서치 실행
 # =====================
+topic = st.text_input("어떤 주제로 자료를 준비하나요?")
+task_type = st.selectbox("과제 유형", ["논문", "발표"])
 if st.button("🔍 리서치 시작") and topic:
+
     with st.spinner("리서치 진행 중..."):
-        qs = gen_questions(topic)
+        # 키워드 생성
         kws = gen_keywords(topic)
 
+        # 뉴스
         news_raw = []
         for k in kws[:2]:
             news_raw.extend(search_news(k))
 
-        filtered = []
+        # 학술
+        dbpia_raw = []
+        if dbpia_key:
+            for k in kws[:3]:
+                dbpia_raw.extend(search_dbpia(k))
+
+        # 관련도 평가 (뉴스만)
+        filtered_news = []
         for n in news_raw:
             s = relevance(topic, n)
             if s >= 2:
                 n["score"] = s
-                filtered.append(n)
+                filtered_news.append(n)
 
-        df = pd.DataFrame([
+        # 뉴스 DataFrame
+        news_df = pd.DataFrame([
             {
                 "제목": n["title"],
                 "요약": n["desc"],
                 "도메인": n["link"].split("/")[2],
                 "출처": format_source(n["link"].split("/")[2]),
-                "발행일": n["date"].strftime("%Y-%m-%d") if n["date"] else "",
                 "연도": n["date"].year if n["date"] else "",
                 "관련도": n["score"],
                 "링크": n["link"]
-            } for n in filtered
-        ])
+            } for n in filtered_news
+        ]).drop_duplicates(subset=["링크"])
 
-        # 🔑 링크 기준 중복 제거 (핵심)
-        df = df.drop_duplicates(subset=["링크"])
+        # 학술 DataFrame (아직 구조 예시)
+        dbpia_df = pd.DataFrame(dbpia_raw)
 
+        # 최신동향 요약
+        trend_summary = gen_trend_summary(kws)
+
+        # 결과 저장
         st.session_state.results = {
             "topic": topic,
-            "questions": qs,
             "keywords": kws,
-            "table": df
+            "news": news_df,
+            "dbpia": dbpia_df,
+            "trend": trend_summary
         }
-
         st.session_state.history.append(topic)
 
 # =====================
@@ -166,31 +158,34 @@ if st.button("🔍 리서치 시작") and topic:
 if st.session_state.results:
     r = st.session_state.results
 
-    st.subheader("🔍 리서치 질문")
-    for q in r["questions"]:
-        st.markdown(f"• {q}")
-
-    st.subheader("🔑 검색 키워드")
+    st.subheader("🔍 키워드")
     st.write(", ".join(r["keywords"]))
 
-    sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
+    st.subheader("📌 최신 연구 동향 요약")
+    st.markdown(r["trend"])
 
-    table = r["table"]
-    if sort == "관련도순":
-        table = table.sort_values(by="관련도", ascending=False)
-    else:
-        table = table.sort_values(by="발행일", ascending=False)
+    # 뉴스 섹션
+    st.subheader("📰 뉴스 기반 자료")
+    st.dataframe(r["news"])
 
-    st.subheader("📊 근거 자료 테이블")
-    st.dataframe(table, use_container_width=True)
+    # 학술 섹션
+    st.subheader("📄 학술 자료 (DBpia)")
+    st.dataframe(r["dbpia"])
 
-    st.subheader("📎 참고문헌 (APA 7판 · 중복 제거)")
-    refs = table.drop_duplicates(subset=["링크"]).head(10)
-
-    for _, row in refs.iterrows():
-        st.markdown(
-            f"- {row['출처']}. ({row['연도']}). {row['제목']}. {row['링크']}"
-        )
+    # APA 참고문헌
+    st.subheader("📎 참고문헌 (APA 7판)")
+    if not r["news"].empty:
+        st.markdown("**뉴스**")
+        for _, row in r["news"].iterrows():
+            st.markdown(
+                f"- {row['출처']}. ({row['연도']}). {row['제목']}. {row['링크']}"
+            )
+    if not r["dbpia"].empty:
+        st.markdown("**학술논문**")
+        for _, row in r["dbpia"].iterrows():
+            st.markdown(
+                f"- {row['authors']} ({row['year']}). {row['title']}. {row['journal']}. {row['link']}"
+            )
 
 # =====================
 # 사이드바 - 히스토리
