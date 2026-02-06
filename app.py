@@ -1,219 +1,137 @@
 import streamlit as st
 import requests
-import json
-import time
-from openai import OpenAI
+import pandas as pd
+import openai
 
 # =====================
-# 기본
+# Streamlit Page Config
 # =====================
-st.set_page_config(page_title="🎬 오늘의 기분 영화 추천", layout="wide")
-
-TMDB_BASE = "https://api.themoviedb.org/3"
-POSTER_BASE = "https://image.tmdb.org/t/p/w342"
-
-GENRE_IDS = {
-    "액션": 28,
-    "코미디": 35,
-    "SF": 878,
-    "드라마": 18,
-    "로맨스": 10749,
-    "판타지": 14
-}
-
-MOOD_KEYWORDS = {
-    "액션": "action adventure energy",
-    "로맨스": "romantic sunset love",
-    "SF": "space galaxy stars",
-    "코미디": "happy fun colorful",
-    "드라마": "emotional rain cinematic",
-    "판타지": "fantasy magical forest"
-}
+st.set_page_config(page_title="RefNote AI", layout="wide")
 
 # =====================
-# 사이드바
+# Sidebar - API Keys
 # =====================
-st.sidebar.header("🔑 API 키 입력")
-openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
-tmdb_key = st.sidebar.text_input("TMDB API Key", type="password")
-unsplash_key = st.sidebar.text_input("Unsplash Access Key", type="password")
+st.sidebar.title("🔐 API Keys")
+
+openai_api_key = st.sidebar.text_input(
+    "OpenAI API Key", type="password"
+)
+naver_client_id = st.sidebar.text_input(
+    "Naver Client ID", type="password"
+)
+naver_client_secret = st.sidebar.text_input(
+    "Naver Client Secret", type="password"
+)
+
+openai.api_key = openai_api_key
 
 # =====================
-# 세션 상태
+# Guard Clause
 # =====================
-if "done" not in st.session_state:
-    st.session_state.done = False
+if not (openai_api_key and naver_client_id and naver_client_secret):
+    st.warning("사이드바에 모든 API Key를 입력해주세요.")
+    st.stop()
 
 # =====================
-# OpenAI: 감정 → 장르
+# OpenAI Functions
 # =====================
-def analyze_emotion(text):
-    client = OpenAI(api_key=openai_key)
-
+def generate_research_questions(topic, task_type):
     prompt = f"""
-사용자의 오늘 기분을 바탕으로
-가장 어울리는 영화 장르 하나를 골라주세요.
+    주제: {topic}
+    과제 유형: {task_type}
 
-선택 가능 장르:
-액션, 코미디, SF, 드라마, 로맨스, 판타지
-
-JSON 형식으로만 답변:
-{{
-  "genre": "...",
-  "personality": "성향 설명 (2~3문장)"
-}}
-
-사용자 기분:
-{text}
-"""
-
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
+    위 주제에 대해 신뢰 가능한 자료 조사를 하기 위한
+    핵심 리서치 질문을 3~5개 계층적으로 생성해줘.
+    질문은 검색 가능한 형태로 작성해줘.
+    """
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7
+        temperature=0.3
     )
+    return [q for q in response.choices[0].message.content.split("\n") if q.strip()]
 
-    return json.loads(res.choices[0].message.content)
 
-# =====================
-# TMDB 영화
-# =====================
-def get_movies(genre):
-    params = {
-        "api_key": tmdb_key,
-        "language": "ko-KR",
-        "with_genres": GENRE_IDS[genre],
-        "sort_by": "popularity.desc"
-    }
-    res = requests.get(f"{TMDB_BASE}/discover/movie", params=params)
-    return res.json().get("results", [])[:3]
-
-# =====================
-# Unsplash 이미지
-# =====================
-def get_mood_image(genre):
-    params = {
-        "query": MOOD_KEYWORDS[genre],
-        "client_id": unsplash_key,
-        "per_page": 1
-    }
-    res = requests.get("https://api.unsplash.com/search/photos", params=params)
-    data = res.json()
-    if data.get("results"):
-        return data["results"][0]["urls"]["regular"]
-    return None
-
-# =====================
-# ZenQuotes
-# =====================
-def get_quote():
-    res = requests.get("https://zenquotes.io/api/random")
-    q = res.json()[0]
-    return q["q"], q["a"]
-
-# =====================
-# OpenAI 스트리밍 해석 (🔥 수정된 부분)
-# =====================
-def stream_ai_analysis(user_text, movie, quote):
-    client = OpenAI(api_key=openai_key)
-
+def summarize_with_citation(text, source):
     prompt = f"""
-사용자 기분:
-{user_text}
+    아래 자료를 문서에 바로 인용할 수 있도록
+    2~3문장으로 요약해줘.
+    반드시 출처를 포함한 인용 문장 형태로 작성해줘.
 
-추천 영화:
-{movie['title']} - {movie['overview']}
+    자료:
+    {text}
 
-명언:
-"{quote[0]}"
-
-요구사항:
-1. 사용자 성향 설명 (2문장)
-2. 이 영화를 추천한 이유 (1문장)
-3. 명언을 사용자에게 맞게 해석 (1문장)
-"""
-
-    stream = client.chat.completions.create(
-        model="gpt-4o-mini",
+    출처:
+    {source}
+    """
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
-        stream=True
+        temperature=0.2
     )
+    return response.choices[0].message.content
 
-    placeholder = st.empty()
-    full_text = ""
-
-    for chunk in stream:
-        delta = chunk.choices[0].delta
-        if hasattr(delta, "content") and delta.content:
-            full_text += delta.content
-            placeholder.markdown(full_text)
-            time.sleep(0.02)
 
 # =====================
-# 메인 화면
+# Naver News Search
 # =====================
-st.title("🎬 오늘의 기분으로 영화 추천받기")
-st.caption("기분을 말해주면, AI가 딱 맞는 영화를 골라줘요")
+def search_naver_news(query, display=5, sort="date"):
+    url = "https://openapi.naver.com/v1/search/news.json"
+    headers = {
+        "X-Naver-Client-Id": naver_client_id,
+        "X-Naver-Client-Secret": naver_client_secret
+    }
+    params = {
+        "query": query,
+        "display": display,
+        "sort": sort
+    }
+    res = requests.get(url, headers=headers, params=params)
+    return res.json().get("items", [])
 
-if not st.session_state.done:
-    mood = st.text_area("💬 오늘 기분이 어때요?", placeholder="예: 아무것도 하기 싫고 좀 우울해요")
-
-    if st.button("🎯 추천받기"):
-        if not (openai_key and tmdb_key and unsplash_key):
-            st.error("사이드바에 모든 API 키를 입력해주세요.")
-            st.stop()
-
-        with st.spinner("AI가 당신의 마음을 이해하는 중..."):
-            analysis = analyze_emotion(mood)
-            genre = analysis["genre"]
-            movies = get_movies(genre)
-            image = get_mood_image(genre)
-            quote = get_quote()
-
-        st.session_state.result = {
-            "mood": mood,
-            "analysis": analysis,
-            "movies": movies,
-            "image": image,
-            "quote": quote
-        }
-        st.session_state.done = True
-        st.rerun()
 
 # =====================
-# 결과 화면
+# Main UI
 # =====================
-else:
-    r = st.session_state.result
+st.title("📚 RefNote AI")
+st.subheader("출처 기반 리서치 어시스턴트")
 
-    st.header(f"🎭 당신에게 딱인 장르는 **{r['analysis']['genre']}**")
-    st.info(r["analysis"]["personality"])
+topic = st.text_input("어떤 주제로 자료를 준비하나요?")
+task_type = st.selectbox("과제 유형", ["리포트", "기획서", "발표", "논문"])
 
-    st.divider()
+if st.button("리서치 시작") and topic:
+    with st.spinner("리서치 질문 생성 중..."):
+        questions = generate_research_questions(topic, task_type)
 
-    st.subheader("🍿 추천 영화")
-    cols = st.columns(3)
-    for col, m in zip(cols, r["movies"]):
-        with col:
-            if m.get("poster_path"):
-                st.image(POSTER_BASE + m["poster_path"])
-            st.markdown(f"**{m['title']}**")
-            st.write("⭐", m["vote_average"])
+    st.markdown("## 🔍 리서치 질문")
+    for q in questions:
+        st.write("•", q)
 
-    st.divider()
+    all_results = []
 
-    if r["image"]:
-        st.subheader("🎨 오늘의 무드")
-        st.image(r["image"], use_container_width=True)
+    for q in questions[:3]:
+        news = search_naver_news(q)
 
-    st.subheader("💬 오늘의 한마디")
-    st.markdown(f"*{r['quote'][0]}*  \n— {r['quote'][1]}")
+        for item in news:
+            all_results.append({
+                "유형": "뉴스",
+                "제목": item["title"],
+                "요약": item["description"],
+                "출처": item["originallink"],
+                "연도": item["pubDate"][:4]
+            })
 
-    st.divider()
+    df = pd.DataFrame(all_results)
 
-    st.subheader("🤖 AI의 최종 해석")
-    stream_ai_analysis(r["mood"], r["movies"][0], r["quote"])
+    st.markdown("## 📊 근거 자료 테이블")
+    st.dataframe(df, use_container_width=True)
 
-    if st.button("🔁 다시 해보기"):
-        st.session_state.clear()
-        st.rerun()
+    st.markdown("## ✍️ 인용 가능한 요약")
+    for _, row in df.iterrows():
+        summary = summarize_with_citation(
+            row["요약"],
+            f"{row['출처']} ({row['연도']})"
+        )
+        st.markdown(f"**{row['제목']}**")
+        st.write(summary)
+        st.divider()
