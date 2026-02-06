@@ -2,7 +2,11 @@ import streamlit as st
 import requests
 import pandas as pd
 from openai import OpenAI
+from urllib.parse import urlparse
 
+# =====================
+# Page Config
+# =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 
 # =====================
@@ -20,7 +24,7 @@ if not (openai_api_key and naver_client_id and naver_client_secret):
 client = OpenAI(api_key=openai_api_key)
 
 # =====================
-# Session State Init
+# Session State
 # =====================
 if "history" not in st.session_state:
     st.session_state.history = {}
@@ -36,12 +40,14 @@ def generate_questions_and_keywords(topic, task_type):
 주제: {topic}
 과제 유형: {task_type}
 
+아래 형식을 반드시 지켜.
+
 [리서치 질문]
 1. 질문 1
 2. 질문 2
 3. 질문 3
 
-[검색 키워드] (중요도 순, 5개)
+[검색 키워드] (중요도 순 5개)
 - 키워드1
 - 키워드2
 - 키워드3
@@ -54,9 +60,10 @@ def generate_questions_and_keywords(topic, task_type):
         temperature=0.3,
         timeout=20
     )
-    text = res.choices[0].message.content
 
+    text = res.choices[0].message.content
     questions, keywords, section = [], [], None
+
     for line in text.split("\n"):
         line = line.strip()
         if "[리서치 질문]" in line:
@@ -85,6 +92,9 @@ def summarize_latest_trends(keywords):
     return res.choices[0].message.content
 
 
+# =====================
+# Naver News API
+# =====================
 def search_naver_news(query, display=3):
     url = "https://openapi.naver.com/v1/search/news.json"
     headers = {
@@ -96,6 +106,17 @@ def search_naver_news(query, display=3):
     if res.status_code == 200:
         return res.json().get("items", [])
     return []
+
+# =====================
+# APA Citation Generator
+# =====================
+def apa_citation(row):
+    year = row["연도"]
+    title = row["제목"]
+    url = row["출처"]
+    source = urlparse(url).netloc.replace("www.", "")
+
+    return f"{source}. ({year}). {title}. {url}"
 
 # =====================
 # Sidebar - History
@@ -112,6 +133,8 @@ for task_type, topics in st.session_state.history.items():
 # Main UI
 # =====================
 st.title("📚 RefNote AI")
+st.caption("출처 기반 리서치 어시스턴트")
+
 topic = st.text_input("어떤 주제로 자료를 준비하나요?")
 task_type = st.selectbox("과제 유형", ["발표", "리포트", "기획서", "논문"])
 
@@ -130,10 +153,11 @@ if st.button("리서치 시작") and topic:
                     "제목": item["title"],
                     "요약": item["description"],
                     "출처": item["originallink"],
-                    "연도": item["pubDate"][:4]
+                    "연도": item["pubDate"][:4],
+                    "관련도": keywords.index(k)
                 })
 
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows).sort_values("관련도").head(10)
 
         result = {
             "topic": topic,
@@ -153,16 +177,27 @@ if st.button("리서치 시작") and topic:
 if st.session_state.current:
     data = st.session_state.current
 
-    st.subheader("🔍 리서치 질문")
+    st.subheader("🔍 리서치 질문 (3개)")
     for q in data["questions"]:
         st.write("-", q)
 
-    st.subheader("🔑 사용된 검색 키워드")
+    st.subheader("🔑 사용된 검색 키워드 (중요도 순)")
     for i, k in enumerate(data["keywords"], 1):
         st.write(f"{i}. {k}")
 
-    st.subheader("🧠 최신 연구 동향")
+    st.subheader("🧠 최신 연구 동향 요약")
     st.write(data["trend"])
 
-    st.subheader("📊 근거 자료 테이블")
-    st.dataframe(data["df"], use_container_width=True)
+    st.subheader("📊 근거 자료 테이블 (주요 관련도 순)")
+    st.dataframe(data["df"][["제목", "연도", "출처"]], use_container_width=True)
+
+    # =====================
+    # APA Citations
+    # =====================
+    st.subheader("📎 참고문헌 (APA 형식, TOP 10)")
+
+    for idx, row in data["df"].iterrows():
+        citation = apa_citation(row)
+        st.code(citation, language="text")
+        st.button("📋 복사", key=f"copy-{idx}", on_click=lambda x=citation: st.session_state.update({"_clip": x}))
+        st.divider()
