@@ -12,12 +12,31 @@ st.title("📚 RefNote AI")
 st.caption("출처 기반 리서치 어시스턴트")
 
 # =========================
-# API 설정
+# 🔑 사이드바: API 키 입력
 # =========================
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+st.sidebar.header("🔑 API 설정")
 
-NAVER_CLIENT_ID = st.secrets["NAVER_CLIENT_ID"]
-NAVER_CLIENT_SECRET = st.secrets["NAVER_CLIENT_SECRET"]
+openai_api_key = st.sidebar.text_input(
+    "OpenAI API Key",
+    type="password",
+    help="sk- 로 시작하는 OpenAI API 키"
+)
+
+naver_client_id = st.sidebar.text_input(
+    "Naver Client ID",
+    type="password"
+)
+
+naver_client_secret = st.sidebar.text_input(
+    "Naver Client Secret",
+    type="password"
+)
+
+if not openai_api_key or not naver_client_id or not naver_client_secret:
+    st.warning("⬅️ 사이드바에 모든 API 키를 입력하세요.")
+    st.stop()
+
+client = OpenAI(api_key=openai_api_key)
 
 # =========================
 # 유틸 함수
@@ -59,7 +78,7 @@ def generate_research_questions(topic):
 # =========================
 def extract_keywords(topic):
     prompt = f"""
-    다음 연구 주제에서 검색용 핵심 키워드 5개를 중요도 순으로 추출해줘.
+    다음 연구 주제에서 검색에 적합한 핵심 키워드 5개를 중요도 순으로 추출해줘.
     쉼표(,)로만 구분해서 출력.
 
     주제: {topic}
@@ -79,8 +98,8 @@ def extract_keywords(topic):
 def search_naver_news(query):
     url = "https://openapi.naver.com/v1/search/news.json"
     headers = {
-        "X-Naver-Client-Id": NAVER_CLIENT_ID,
-        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET
+        "X-Naver-Client-Id": naver_client_id,
+        "X-Naver-Client-Secret": naver_client_secret
     }
     params = {
         "query": query,
@@ -102,7 +121,7 @@ def search_naver_news(query):
     return results
 
 # =========================
-# 4. AI 뉴스 관련도 평가
+# 4. AI 관련도 평가
 # =========================
 def relevance_score(topic, news):
     prompt = f"""
@@ -126,7 +145,7 @@ def relevance_score(topic, news):
         return 0
 
 # =========================
-# 5. APA 참고문헌 변환
+# 5. APA 참고문헌
 # =========================
 def to_apa(news):
     year = news["date"].year if news["date"] else "n.d."
@@ -186,7 +205,7 @@ if st.button("🔍 리서치 시작") and topic:
                 """
             )
 
-        # APA 참고문헌
+        # 참고문헌
         st.subheader("📎 참고문헌 (APA 형식, TOP 10)")
         for ref in filtered[:10]:
             st.markdown(f"- {to_apa(ref)}")
