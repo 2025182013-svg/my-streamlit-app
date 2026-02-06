@@ -6,7 +6,7 @@ from openai import OpenAI
 from urllib.parse import urlparse
 
 # =====================
-# Page Config
+# Config
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 
@@ -25,68 +25,55 @@ if not (openai_api_key and naver_client_id and naver_client_secret):
 client = OpenAI(api_key=openai_api_key)
 
 # =====================
-# Session State
-# =====================
-if "result" not in st.session_state:
-    st.session_state.result = None
-
-# =====================
 # Utils
 # =====================
 def clean_html(text):
     return re.sub("<.*?>", "", text)
 
+def extract_year(pub_date):
+    match = re.search(r"\d{4}", pub_date)
+    return match.group() if match else "N/A"
+
 # =====================
-# GPT: Questions + Keywords (JSON)
+# GPT Functions
 # =====================
 def generate_questions_and_keywords(topic, task_type):
     prompt = f"""
 주제: {topic}
 과제 유형: {task_type}
 
-반드시 JSON 형식으로만 답변해.
+JSON 형식으로만 답해.
 
 {{
-  "questions": [
-    "리서치 질문 1",
-    "리서치 질문 2",
-    "리서치 질문 3"
-  ],
-  "keywords": [
-    "키워드1",
-    "키워드2",
-    "키워드3",
-    "키워드4",
-    "키워드5"
-  ]
+ "questions": [
+  "질문1",
+  "질문2",
+  "질문3"
+ ],
+ "keywords": ["키워드1","키워드2","키워드3","키워드4","키워드5"]
 }}
 """
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        timeout=20
+        temperature=0.2
     )
     return eval(res.choices[0].message.content)
 
-# =====================
-# GPT: Research Trend
-# =====================
 def summarize_trends(keywords):
     prompt = f"""
-다음 키워드를 바탕으로 교육·연구 관점의 최신 연구 동향을 200자 이내로 요약해줘.
+다음 키워드를 바탕으로 교육·연구 관점 최신 연구 동향을 200자 이내로 요약.
 키워드: {", ".join(keywords)}
 """
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        timeout=15
+        temperature=0.2
     )
     return res.choices[0].message.content
 
 # =====================
-# Naver News Search (Filtered)
+# News Search
 # =====================
 def search_naver_news(keywords):
     url = "https://openapi.naver.com/v1/search/news.json"
@@ -99,7 +86,7 @@ def search_naver_news(keywords):
 
     for kw in keywords:
         params = {"query": kw, "display": 10, "sort": "date"}
-        res = requests.get(url, headers=headers, params=params, timeout=10)
+        res = requests.get(url, headers=headers, params=params)
         if res.status_code != 200:
             continue
 
@@ -107,27 +94,21 @@ def search_naver_news(keywords):
             title = clean_html(item["title"])
             desc = clean_html(item["description"])
 
-            # 🔎 핵심 키워드 2개 이상 포함된 기사만
-            match_count = sum(k in title + desc for k in keywords)
-            if match_count < 2:
+            # 🔽 뉴스는 키워드 1개만 포함해도 OK
+            if not any(k in title + desc for k in keywords):
                 continue
 
             rows.append({
                 "제목": title,
                 "요약": desc,
-                "연도": item["pubDate"][:4],
-                "출처": item["originallink"],
-                "관련도": match_count
+                "연도": extract_year(item["pubDate"]),
+                "출처": item["originallink"]
             })
 
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return df
-
-    return df.sort_values(["관련도", "연도"], ascending=[False, False]).head(10)
+    return pd.DataFrame(rows).drop_duplicates().head(10)
 
 # =====================
-# APA Citation
+# APA
 # =====================
 def apa(row):
     domain = urlparse(row["출처"]).netloc.replace("www.", "")
@@ -145,38 +126,41 @@ task_type = st.selectbox("과제 유형", ["발표", "리포트", "기획서", "
 if st.button("리서치 시작") and topic:
     with st.spinner("리서치 진행 중..."):
         parsed = generate_questions_and_keywords(topic, task_type)
-        questions = parsed["questions"]
-        keywords = parsed["keywords"]
-
-        trend = summarize_trends(keywords)
-        df = search_naver_news(keywords)
+        news_df = search_naver_news(parsed["keywords"])
 
         st.session_state.result = {
-            "questions": questions,
-            "keywords": keywords,
-            "trend": trend,
-            "df": df
+            "questions": parsed["questions"],
+            "keywords": parsed["keywords"],
+            "trend": summarize_trends(parsed["keywords"]),
+            "news": news_df
         }
 
 # =====================
 # Output
 # =====================
-if st.session_state.result:
+if "result" in st.session_state:
     r = st.session_state.result
 
     st.subheader("🔍 리서치 질문 (3개)")
     for q in r["questions"]:
         st.write("•", q)
 
-    st.subheader("🔑 사용된 검색 키워드")
+    st.subheader("🔑 검색 키워드")
     st.write(", ".join(r["keywords"]))
 
-    st.subheader("🧠 최신 연구 동향 요약")
+    st.subheader("🧠 최신 연구 동향")
     st.write(r["trend"])
 
-    st.subheader("📊 근거 자료 테이블")
-    st.dataframe(r["df"][["제목", "연도", "출처"]], use_container_width=True)
+    st.subheader("📊 근거 자료")
 
-    st.subheader("📎 참고문헌 (APA 형식, TOP 10)")
-    for i, row in enumerate(r["df"].iterrows(), 1):
-        st.write(f"{i}. {apa(row[1])}")
+    tab1, tab2 = st.tabs(["📰 뉴스", "📄 논문 (준비 중)"])
+
+    with tab1:
+        st.dataframe(r["news"][["제목", "연도", "출처"]], use_container_width=True)
+
+        st.subheader("📎 참고문헌 (APA 형식, TOP 10)")
+        for i, row in enumerate(r["news"].iterrows(), 1):
+            st.write(f"{i}. {apa(row[1])}")
+
+    with tab2:
+        st.info("DBpia API 연동 예정 (논문 데이터)")
