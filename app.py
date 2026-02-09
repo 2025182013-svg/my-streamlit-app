@@ -9,17 +9,15 @@ import pandas as pd
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("연구/뉴스 분리형 리서치 생성 시스템 · APA7 · 히스토리 복원 · CSV 다운로드")
+st.caption("연구 리서치 자동화 시스템 · APA7 strict · 날짜별 히스토리 · CSV")
 
-HISTORY_FILE = "history.json"
+HISTORY_DIR = "history"
 
 # =====================
 # 세션 상태
 # =====================
 if "results" not in st.session_state:
     st.session_state.results = None
-if "history" not in st.session_state:
-    st.session_state.history = []
 
 # =====================
 # 사이드바 API
@@ -50,10 +48,19 @@ def parse_date(d):
 def format_source(domain):
     return domain.replace("www.", "").split(".")[0].capitalize()
 
-def apa_news(row):
-    author = row.get("저자", row.get("출처", "Unknown"))
-    year = row.get("발행일", "")[:4] if row.get("발행일") else "n.d."
-    return f"{author}. ({year}). {row['제목']}. {row['출처']}. {row['링크']}"
+def apa_news_strict(row):
+    # APA7 strict 뉴스 형식
+    author = row.get("출처", "Unknown")
+    date_raw = row.get("발행일", "")
+    try:
+        dt = datetime.strptime(date_raw, "%Y-%m-%d")
+        date_fmt = dt.strftime("%Y, %B %d")
+    except:
+        date_fmt = "n.d."
+    title = row["제목"]
+    source = row["출처"]
+    url = row["링크"]
+    return f"{author}. ({date_fmt}). {title}. {source}. {url}"
 
 # =====================
 # AI
@@ -94,14 +101,6 @@ def relevance(topic, n):
         return 0
 
 # =====================
-# 주제 분류
-# =====================
-def classify_topic(topic):
-    if any(k in topic for k in ["비교", "vs", "정책", "제도", "국가", "모델"]):
-        return "research"
-    return "news"
-
-# =====================
 # 뉴스 (네이버)
 # =====================
 def search_news_korea(q):
@@ -128,7 +127,6 @@ def search_news_korea(q):
 # 논문 (DBpia 예정)
 # =====================
 def search_dbpia(q):
-    # 추후 DBpia API 연동 예정
     return pd.DataFrame(columns=["제목", "저자", "학술지", "연도", "링크"])
 
 # =====================
@@ -138,17 +136,15 @@ topic = st.text_input("연구 주제를 입력하세요")
 
 if st.button("🔍 리서치 시작") and topic:
     with st.spinner("리서치 진행 중..."):
-        mode = classify_topic(topic)
         questions = gen_questions(topic)
         keywords = gen_keywords(topic)
         trend = gen_trend_summary(keywords)
 
-        # 🔥 키워드 4개 사용 (확장)
+        # 키워드 4개 검색
         news_list = []
         for k in keywords[:4]:
             news_list.extend(search_news_korea(k))
 
-        # 🔥 관련도 기준 완화 (>=1)
         filtered = []
         for n in news_list:
             n["score"] = relevance(topic, n)
@@ -158,10 +154,9 @@ if st.button("🔍 리서치 시작") and topic:
         news_df = pd.DataFrame(filtered).drop_duplicates(subset=["링크"])
         paper_df = search_dbpia(topic)
 
-        st.session_state.results = {
+        results = {
             "timestamp": datetime.now().isoformat(),
             "topic": topic,
-            "mode": mode,
             "questions": questions,
             "keywords": keywords,
             "trend": trend,
@@ -169,14 +164,20 @@ if st.button("🔍 리서치 시작") and topic:
             "papers": paper_df.to_dict(orient="records")
         }
 
-        # 히스토리 저장
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                st.session_state.history = json.load(f)
+        st.session_state.results = results
 
-        st.session_state.history.append(st.session_state.results)
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(st.session_state.history, f, ensure_ascii=False, indent=2)
+        # =====================
+        # 날짜별 히스토리 저장
+        # =====================
+        today = datetime.now().strftime("%Y-%m-%d")
+        day_dir = os.path.join(HISTORY_DIR, today)
+        os.makedirs(day_dir, exist_ok=True)
+
+        existing = len(os.listdir(day_dir))
+        fname = f"research_{existing+1}.json"
+
+        with open(os.path.join(day_dir, fname), "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
 
 # =====================
 # 출력
@@ -196,7 +197,6 @@ if st.session_state.results:
 
     tab_news, tab_paper = st.tabs(["📰 뉴스", "📄 논문 (DBpia 예정)"])
 
-    # 뉴스
     with tab_news:
         df = pd.DataFrame(r["news"])
         if not df.empty:
@@ -207,54 +207,38 @@ if st.session_state.results:
                 df = df.sort_values(by="발행일", ascending=False)
 
             st.dataframe(df, use_container_width=True)
-            st.download_button(
-                "📥 뉴스 CSV 다운로드",
+            st.download_button("📥 뉴스 CSV 다운로드",
                 df.to_csv(index=False).encode("utf-8-sig"),
                 f"{r['topic']}_news.csv"
             )
 
-            st.subheader("📎 APA 참고문헌 (Top10)")
+            st.subheader("📎 APA 7 참고문헌 (Top10 · Strict)")
             for _, row in df.head(10).iterrows():
-                st.markdown(f"- {apa_news(row)}")
+                st.markdown(f"- {apa_news_strict(row)}")
         else:
             st.info("뉴스 결과 없음")
 
-    # 논문
     with tab_paper:
-        pdf = pd.DataFrame(r["papers"])
         st.info("DBpia 연동 예정 영역입니다.")
+        pdf = pd.DataFrame(r["papers"])
         st.dataframe(pdf, use_container_width=True)
-        st.download_button(
-            "📥 논문 CSV 다운로드",
-            pdf.to_csv(index=False).encode("utf-8-sig"),
-            f"{r['topic']}_papers.csv"
-        )
 
 # =====================
-# 히스토리
+# 히스토리 사이드바
 # =====================
-st.sidebar.header("📂 리서치 히스토리")
-if os.path.exists(HISTORY_FILE):
-    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-        saved = json.load(f)
+st.sidebar.header("📂 날짜별 리서치 히스토리")
+
+if os.path.exists(HISTORY_DIR):
+    days = sorted(os.listdir(HISTORY_DIR), reverse=True)
 else:
-    saved = []
+    days = []
 
-for h in reversed(saved):
-    # 구버전 history.json 문자열 구조 대응
-    if isinstance(h, str):
-        topic_label = h
-        ts_label = ""
-        data_obj = None
-    else:
-        topic_label = h.get("topic", "NoTitle")
-        ts = h.get("timestamp", "")
-        ts_label = ts[:10] if ts else ""
-        data_obj = h
-
-    if st.sidebar.button(f"{topic_label} {ts_label}"):
-        if data_obj:
-            st.session_state.results = data_obj
-            st.success("리서치 복원 완료")
-        else:
-            st.warning("구버전 히스토리입니다. 리서치를 다시 실행하세요.")
+for day in days:
+    with st.sidebar.expander(f"📅 {day}"):
+        day_path = os.path.join(HISTORY_DIR, day)
+        files = sorted(os.listdir(day_path))
+        for f in files:
+            if st.button(f"{f}", key=f"{day}_{f}"):
+                with open(os.path.join(day_path, f), "r", encoding="utf-8") as jf:
+                    st.session_state.results = json.load(jf)
+                st.success("리서치 복원 완료")
