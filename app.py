@@ -51,7 +51,7 @@ def parse_date(d):
 def format_source(domain):
     return domain.replace("www.", "").split(".")[0].capitalize()
 
-# APA 7판 웹 뉴스 형식
+# APA 7판 뉴스 형식
 def apa_news(row):
     author = row.get("저자", row["출처"])
     year = row["발행일"][:4] if row["발행일"] else "n.d."
@@ -91,10 +91,11 @@ def gen_trend_summary(keywords):
     return r.choices[0].message.content.strip()
 
 def relevance(topic, n):
+    # KeyError 방지 위해 컬럼명 한국어 사용
     prompt = f"""
 연구 주제: {topic}
-뉴스 제목: {n['title']}
-요약: {n['desc']}
+뉴스 제목: {n['제목']}
+요약: {n['요약']}
 관련도 0~3 숫자만 출력
 """
     r = client.chat.completions.create(
