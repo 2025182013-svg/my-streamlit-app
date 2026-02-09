@@ -1,260 +1,228 @@
 import streamlit as st
-import requests
-import pandas as pd
-import html
+import requests, html
 from datetime import datetime
 from openai import OpenAI
-import re
+import pandas as pd
+import io
 
-# -----------------------------
+# =====================
 # 기본 설정
-# -----------------------------
+# =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("출처 기반 리서치 어시스턴트")
+st.caption("핵심 키워드 기반 리서치 결과물 생성 도구 (Excel 저장 지원)")
 
-# -----------------------------
-# 세션 상태 초기화
-# -----------------------------
+# =====================
+# 세션 상태
+# =====================
+if "results" not in st.session_state:
+    st.session_state.results = None
 if "history" not in st.session_state:
-    st.session_state.history = {}
+    st.session_state.history = []
 
-if "current_result" not in st.session_state:
-    st.session_state.current_result = None
-
-if "news_sort" not in st.session_state:
-    st.session_state.news_sort = "관련도순"
-
-if "paper_sort" not in st.session_state:
-    st.session_state.paper_sort = "관련도순"
-
-# -----------------------------
-# 사이드바 - API Keys
-# -----------------------------
+# =====================
+# 사이드바 - API
+# =====================
 st.sidebar.header("🔑 API 설정")
-
 openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
-naver_client_id = st.sidebar.text_input("Naver Client ID", type="password")
-naver_client_secret = st.sidebar.text_input("Naver Client Secret", type="password")
+naver_id = st.sidebar.text_input("Naver Client ID", type="password")
+naver_secret = st.sidebar.text_input("Naver Client Secret", type="password")
 
-if openai_key:
-    client = OpenAI(api_key=openai_key)
-else:
-    client = None
+if not openai_key or not naver_id or not naver_secret:
+    st.warning("⬅️ 사이드바에 모든 API 키를 입력하세요.")
+    st.stop()
 
-st.sidebar.markdown("---")
-st.sidebar.header("📂 리서치 기록")
+client = OpenAI(api_key=openai_key)
 
-if st.session_state.history:
-    for label in st.session_state.history:
-        if st.sidebar.button(label):
-            st.session_state.current_result = st.session_state.history[label]
-else:
-    st.sidebar.write("아직 저장된 리서치가 없습니다.")
+# =====================
+# 유틸 함수
+# =====================
+def clean(t):
+    return html.unescape(t).replace("<b>", "").replace("</b>", "").strip()
 
-# -----------------------------
-# 입력 영역
-# -----------------------------
+def parse_date(d):
+    try:
+        return datetime.strptime(d, "%a, %d %b %Y %H:%M:%S %z")
+    except:
+        return None
+
+def format_source(domain):
+    return domain.replace("www.", "").split(".")[0].capitalize()
+
+# =====================
+# AI 함수
+# =====================
+def gen_questions(topic):
+    prompt = f"다음 주제에 대한 연구 질문 3개를 생성하세요:\n{topic}"
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3
+    )
+    return [q.strip("-• ").strip() for q in r.choices[0].message.content.split("\n") if q.strip()]
+
+def gen_keywords(topic):
+    prompt = f"다음 주제의 핵심 키워드 5개를 중요도순으로 쉼표로 출력:\n{topic}"
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2
+    )
+    return [k.strip() for k in r.choices[0].message.content.split(",")]
+
+def gen_trend_summary(keywords):
+    prompt = f"""
+다음 키워드를 바탕으로 최신 연구 동향을 간단히 요약하세요.
+키워드: {', '.join(keywords)}
+"""
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2
+    )
+    return r.choices[0].message.content.strip()
+
+def relevance(topic, n):
+    prompt = f"""
+연구 주제: {topic}
+뉴스 제목: {n['title']}
+요약: {n['desc']}
+관련도 0~3 숫자만 출력
+"""
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0
+    )
+    try:
+        return int(r.choices[0].message.content.strip())
+    except:
+        return 0
+
+# =====================
+# 네이버 뉴스
+# =====================
+def search_news(q):
+    url = "https://openapi.naver.com/v1/search/news.json"
+    headers = {
+        "X-Naver-Client-Id": naver_id,
+        "X-Naver-Client-Secret": naver_secret
+    }
+    params = {"query": q, "display": 30, "sort": "date"}
+    r = requests.get(url, headers=headers, params=params).json()
+
+    out = []
+    for i in r.get("items", []):
+        out.append({
+            "title": clean(i["title"]),
+            "desc": clean(i["description"]),
+            "link": i["link"],
+            "date": parse_date(i["pubDate"])
+        })
+    return out
+
+# =====================
+# DBpia (미구현)
+# =====================
+def search_dbpia(keyword):
+    return []
+
+# =====================
+# UI 입력
+# =====================
 topic = st.text_input("어떤 주제로 자료를 준비하나요?")
 task_type = st.selectbox("과제 유형", ["논문", "발표"])
 
-# -----------------------------
-# 유틸 함수
-# -----------------------------
-def clean_text(text):
-    text = re.sub(r"<.*?>", "", text)
-    text = html.unescape(text)
-    return text.strip()
-
-def parse_date(pub_date):
-    try:
-        dt = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %z")
-        return dt.strftime("%Y-%m-%d")
-    except:
-        return pub_date
-
-# -----------------------------
-# 리서치 질문 생성
-# -----------------------------
-def generate_questions(topic, task_type):
-    prompt = f"""
-주제: {topic}
-과제 유형: {task_type}
-
-아래 형식으로 리서치 질문 3개를 출력하세요 (한 줄씩)
-"""
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    lines = res.choices[0].message.content.split("\n")
-    return [l.strip("•- ").strip() for l in lines if l.strip()]
-
-# -----------------------------
-# 키워드 & 최신 연구 동향
-# -----------------------------
-def generate_keywords_trend(topic):
-    prompt = f"""
-주제: {topic}
-
-1. 검색용 핵심 키워드 5개를 쉼표로 출력
-2. 최신 연구 동향을 3~5문장 요약
-
-형식:
-키워드: a, b, c, d, e
-동향: ~
-"""
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    text = res.choices[0].message.content
-    parts = text.split("동향:")
-    keys_part = parts[0].split("키워드:")[-1].strip()
-    keywords = [k.strip() for k in keys_part.split(",")]
-    trend = parts[1].strip() if len(parts) > 1 else ""
-    return keywords, trend
-
-# -----------------------------
-# 네이버 뉴스 API 검색
-# -----------------------------
-def search_naver_news(keywords):
-    url = "https://openapi.naver.com/v1/search/news.json"
-    headers = {
-        "X-Naver-Client-Id": naver_client_id,
-        "X-Naver-Client-Secret": naver_client_secret
-    }
-    all_items = []
-
-    for kw in keywords:
-        params = {
-            "query": kw,
-            "display": 30,
-            "sort": "date"
-        }
-        try:
-            res = requests.get(url, headers=headers, params=params, timeout=10)
-            res.raise_for_status()
-        except:
-            continue
-
-        items = res.json().get("items", [])
-        for item in items:
-            title = clean_text(item["title"])
-            desc = clean_text(item["description"])
-            pubdate = parse_date(item["pubDate"])
-            link = item["originallink"]
-
-            all_items.append({
-                "제목": title,
-                "요약": desc,
-                "출처": link,
-                "작성일": pubdate
-            })
-
-    df = pd.DataFrame(all_items).drop_duplicates()
-    return df
-
-# -----------------------------
-# 관련도 계산 (키워드 출현 빈도)
-# -----------------------------
-def calculate_relevance(df, keywords):
-    df["관련도"] = df["제목"].apply(lambda t: sum(t.count(k) for k in keywords))
-    return df
-
-# -----------------------------
-# APA 참고문헌 생성
-# -----------------------------
-def make_apa_list(df):
-    refs = []
-    for _, r in df.head(10).iterrows():
-        domain = r["출처"].split("/")[2]
-        refs.append(
-            f"{domain}. ({r['작성일']}). {r['제목']}. {r['출처']}"
-        )
-    return refs
-
-# -----------------------------
+# =====================
 # 리서치 실행
-# -----------------------------
-if st.button("🔍 리서치 시작") and client and naver_client_id and naver_client_secret and topic:
+# =====================
+if st.button("🔍 리서치 시작") and topic:
     with st.spinner("리서치 진행 중..."):
-        # 리서치 질문
-        questions = generate_questions(topic, task_type)
+        questions = gen_questions(topic)
+        keywords = gen_keywords(topic)
 
-        # 키워드 + 최신 연구 동향
-        keywords, trend = generate_keywords_trend(topic)
+        news_raw = []
+        for k in keywords[:2]:
+            news_raw.extend(search_news(k))
 
-        # 뉴스 수집
-        news_df = search_naver_news(keywords)
-        news_df = calculate_relevance(news_df, keywords)
+        filtered = []
+        for n in news_raw:
+            s = relevance(topic, n)
+            if s >= 2:
+                n["score"] = s
+                filtered.append(n)
 
-        result = {
+        news_df = pd.DataFrame([
+            {
+                "유형": "뉴스",
+                "제목": n["title"],
+                "요약": n["desc"],
+                "출처": format_source(n["link"].split("/")[2]),
+                "발행일": n["date"].strftime("%Y-%m-%d") if n["date"] else "",
+                "관련도": n["score"],
+                "링크": n["link"]
+            } for n in filtered
+        ]).drop_duplicates(subset=["링크"])
+
+        st.session_state.results = {
             "topic": topic,
-            "task": task_type,
             "questions": questions,
             "keywords": keywords,
-            "trend": trend,
-            "news": news_df,
-            "papers": pd.DataFrame()  # 추후 논문 연동 예정
+            "trend": gen_trend_summary(keywords),
+            "news": news_df
         }
-        label = f"[{task_type}] {topic}"
-        st.session_state.history[label] = result
-        st.session_state.current_result = result
+        st.session_state.history.append(topic)
 
-# -----------------------------
+# =====================
 # 결과 출력
-# -----------------------------
-data = st.session_state.current_result
+# =====================
+if st.session_state.results:
+    r = st.session_state.results
 
-if data:
-    st.subheader("🔍 리서치 질문 (3개)")
-    for q in data["questions"]:
-        st.write("•", q)
+    st.subheader("🔍 리서치 질문")
+    for q in r["questions"]:
+        st.markdown(f"• {q}")
 
-    st.subheader("🔑 검색 키워드")
-    st.write(", ".join(data["keywords"]))
+    st.subheader("🔑 핵심 키워드")
+    st.write(", ".join(r["keywords"]))
 
-    st.subheader("🧠 최신 연구 동향")
-    st.write(data["trend"])
+    st.subheader("📈 최신 연구 동향")
+    st.markdown(r["trend"])
 
-    tab1, tab2 = st.tabs(["📰 뉴스", "📄 논문"])
+    sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
 
-    # ---------------- 뉴스 탭 ----------------
-    with tab1:
-        st.radio(
-            "뉴스 정렬 기준",
-            ["관련도순", "최신순"],
-            key="news_sort",
-            horizontal=True
-        )
+    table = r["news"]
+    if sort == "관련도순":
+        table = table.sort_values(by="관련도", ascending=False)
+    else:
+        table = table.sort_values(by="발행일", ascending=False)
 
-        df = data["news"]
-        if not df.empty:
-            if st.session_state.news_sort == "관련도순":
-                sorted_news = df.sort_values("관련도", ascending=False)
-            else:
-                sorted_news = df.sort_values("작성일", ascending=False)
+    st.subheader("📰 뉴스 기반 근거 자료")
+    st.dataframe(table, use_container_width=True)
 
-            st.dataframe(
-                sorted_news.drop(columns=["관련도"]),
-                use_container_width=True
-            )
+    # =====================
+    # Excel 다운로드 버튼
+    # =====================
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        table.to_excel(writer, index=False, sheet_name="Research Results")
+    buffer.seek(0)
 
-            st.subheader("📎 참고문헌 (APA 형식, TOP 10)")
-            for ref in make_apa_list(sorted_news):
-                st.write(ref)
-        else:
-            st.info("관련 뉴스가 없습니다.")
+    st.download_button(
+        label="📥 리서치 결과 엑셀 다운로드",
+        data=buffer,
+        file_name=f"{r['topic']}_research_results.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-    # ---------------- 논문 탭 ----------------
-    with tab2:
-        st.radio(
-            "논문 정렬 기준",
-            ["관련도순", "최신순"],
-            key="paper_sort",
-            horizontal=True
-        )
-        st.info("📄 논문 API 연동 예정입니다.")
+    st.subheader("📎 참고문헌 (APA · 뉴스)")
+    for _, row in table.head(10).iterrows():
+        year = row["발행일"][:4] if row["발행일"] else "n.d."
+        st.markdown(f"- {row['출처']}. ({year}). {row['제목']}. {row['링크']}")
+
+# =====================
+# 사이드바 - 히스토리
+# =====================
+st.sidebar.header("📂 리서치 히스토리 (세션)")
+for h in reversed(st.session_state.history):
+    st.sidebar.write(f"• {h}")
