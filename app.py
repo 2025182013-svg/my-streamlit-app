@@ -10,7 +10,7 @@ import io
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("핵심 키워드 기반 리서치 결과물 생성 도구 (Excel 저장 지원)")
+st.caption("핵심 키워드 기반 리서치 결과물 생성 도구")
 
 # =====================
 # 세션 상태
@@ -35,7 +35,7 @@ if not openai_key or not naver_id or not naver_secret:
 client = OpenAI(api_key=openai_key)
 
 # =====================
-# 유틸 함수
+# 유틸
 # =====================
 def clean(t):
     return html.unescape(t).replace("<b>", "").replace("</b>", "").strip()
@@ -164,12 +164,15 @@ if st.button("🔍 리서치 시작") and topic:
             } for n in filtered
         ]).drop_duplicates(subset=["링크"])
 
+        paper_df = pd.DataFrame(columns=["유형", "제목", "저자", "학술지", "연도", "링크"])
+
         st.session_state.results = {
             "topic": topic,
             "questions": questions,
             "keywords": keywords,
             "trend": gen_trend_summary(keywords),
-            "news": news_df
+            "news": news_df,
+            "papers": paper_df
         }
         st.session_state.history.append(topic)
 
@@ -189,36 +192,33 @@ if st.session_state.results:
     st.subheader("📈 최신 연구 동향")
     st.markdown(r["trend"])
 
-    sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
+    tab1, tab2 = st.tabs(["📰 뉴스", "📄 논문 (DBpia 예정)"])
 
-    table = r["news"]
-    if sort == "관련도순":
-        table = table.sort_values(by="관련도", ascending=False)
-    else:
-        table = table.sort_values(by="발행일", ascending=False)
+    with tab1:
+        sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
+        table = r["news"]
+        if sort == "관련도순":
+            table = table.sort_values(by="관련도", ascending=False)
+        else:
+            table = table.sort_values(by="발행일", ascending=False)
 
-    st.subheader("📰 뉴스 기반 근거 자료")
-    st.dataframe(table, use_container_width=True)
+        st.dataframe(table, use_container_width=True)
 
-    # =====================
-    # Excel 다운로드 버튼
-    # =====================
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        table.to_excel(writer, index=False, sheet_name="Research Results")
-    buffer.seek(0)
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            table.to_excel(writer, index=False, sheet_name="News")
+        buffer.seek(0)
 
-    st.download_button(
-        label="📥 리서치 결과 엑셀 다운로드",
-        data=buffer,
-        file_name=f"{r['topic']}_research_results.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        st.download_button(
+            "📥 뉴스 리서치 결과 엑셀 다운로드",
+            data=buffer,
+            file_name=f"{r['topic']}_news.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
-    st.subheader("📎 참고문헌 (APA · 뉴스)")
-    for _, row in table.head(10).iterrows():
-        year = row["발행일"][:4] if row["발행일"] else "n.d."
-        st.markdown(f"- {row['출처']}. ({year}). {row['제목']}. {row['링크']}")
+    with tab2:
+        st.info("DBpia 연동 예정 영역입니다.")
+        st.dataframe(r["papers"], use_container_width=True)
 
 # =====================
 # 사이드바 - 히스토리
