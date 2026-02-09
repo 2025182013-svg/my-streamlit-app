@@ -1,11 +1,3 @@
-# FULL UPDATED CODE
-# FIXES:
-# 1) HISTORY DISPLAY NAME = PURE TOPIC (no _ , no .json)
-# 2) INTERNAL FILE NAME SAFE, DISPLAY NAME PRETTY
-# 3) SORTING BUG FIXED (관련도순 / 최신순 정상 분리)
-# 4) STRONG FILTER MAINTAINED
-# 5) APA7 STRICT
-
 import streamlit as st
 import requests, html, json, os, re
 from datetime import datetime
@@ -17,9 +9,7 @@ import pandas as pd
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("연구 리서치 자동화 시스템 · APA7 strict · 날짜별 히스토리 · 주제기반 파일명")
-
-HISTORY_DIR = "history"
+st.caption("연구 자동화 리서치 시스템 · APA7 · 날짜별 히스토리 · 주제별 저장")
 
 # =====================
 # 세션 상태
@@ -28,18 +18,33 @@ if "results" not in st.session_state:
     st.session_state.results = None
 
 # =====================
-# 사이드바 API
+# API
 # =====================
 st.sidebar.header("🔑 API 설정")
 openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
 naver_id = st.sidebar.text_input("Naver Client ID", type="password")
 naver_secret = st.sidebar.text_input("Naver Client Secret", type="password")
 
-if not openai_key:
-    st.warning("⬅️ OpenAI API Key 필수")
+if not openai_key or not naver_id or not naver_secret:
+    st.warning("⬅️ 사이드바에 모든 API 키를 입력하세요.")
     st.stop()
 
 client = OpenAI(api_key=openai_key)
+
+# =====================
+# 모드 선택
+# =====================
+st.sidebar.header("⚙️ 리서치 모드")
+mode = st.sidebar.radio(
+    "모드 선택",
+    ["📰 뉴스용 모드", "📚 연구논문용 모드", "🏛️ 정책자료용 모드"]
+)
+
+MODE_CONFIG = {
+    "📰 뉴스용 모드": {"limit": 60, "threshold": 0},
+    "📚 연구논문용 모드": {"limit": 30, "threshold": 2},
+    "🏛️ 정책자료용 모드": {"limit": 40, "threshold": 1},
+}
 
 # =====================
 # 유틸
@@ -47,71 +52,71 @@ client = OpenAI(api_key=openai_key)
 def clean(t):
     return html.unescape(t).replace("<b>", "").replace("</b>", "").strip()
 
-
 def parse_date(d):
     try:
         return datetime.strptime(d, "%a, %d %b %Y %H:%M:%S %z")
     except:
         return None
 
-
 def format_source(domain):
     return domain.replace("www.", "").split(".")[0].capitalize()
 
+def slugify(text):
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = text.strip().replace(" ", "_")
+    return text
 
-def safe_filename(text):
-    return re.sub(r"[^가-힣a-zA-Z0-9]+", "_", text)[:60]
+def pretty(text):
+    return text.replace("_", " ")
 
 # =====================
-# APA7 STRICT
+# APA7 뉴스
 # =====================
-def apa_news_strict(row):
-    author = row.get("출처", "Unknown")
-    date_raw = row.get("발행일", "")
-    try:
-        dt = datetime.strptime(date_raw, "%Y-%m-%d")
-        date_fmt = dt.strftime("%Y, %B %d")
-    except:
-        date_fmt = "n.d."
-    title = row["제목"]
-    source = row["출처"]
-    url = row["링크"]
-    return f"{author}. ({date_fmt}). {title}. {source}. {url}"
+def apa_news(row):
+    author = row.get("출처", "News")
+    year = row["발행일"][:4] if row["발행일"] else "n.d."
+    return f"{author}. ({year}). {row['제목']}. {row['출처']}. {row['링크']}"
 
 # =====================
 # AI
 # =====================
 def gen_questions(topic):
+    prompt = f"다음 주제에 대한 연구 질문 3개 생성:\n{topic}"
     r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": f"다음 주제에 대한 연구 질문 3개 생성:\n{topic}"}],
+        messages=[{"role":"user","content":prompt}],
         temperature=0.3
     )
-    return [q.strip("-• ") for q in r.choices[0].message.content.split("\n") if q.strip()]
-
+    return [q.strip("-• ").strip() for q in r.choices[0].message.content.split("\n") if q.strip()]
 
 def gen_keywords(topic):
+    prompt = f"다음 주제의 핵심 키워드 6개를 중요도순 쉼표 출력:\n{topic}"
     r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": f"다음 주제 핵심 키워드 5개를 중요도순 쉼표 출력:\n{topic}"}],
+        messages=[{"role":"user","content":prompt}],
         temperature=0.2
     )
     return [k.strip() for k in r.choices[0].message.content.split(",")]
 
-
 def gen_trend_summary(keywords):
+    prompt = f"키워드 기반 연구 동향 요약:\n{', '.join(keywords)}"
     r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": f"키워드 기반 최신 연구동향 요약:\n{', '.join(keywords)}"}],
+        messages=[{"role":"user","content":prompt}],
         temperature=0.2
     )
     return r.choices[0].message.content.strip()
 
-
 def relevance(topic, n):
+    prompt = f"""
+연구 주제: {topic}
+뉴스 제목: {n['제목']}
+요약: {n['요약']}
+관련도 0~3 숫자만 출력
+"""
     r = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": f"연구주제:{topic}\n제목:{n['제목']}\n요약:{n['요약']}\n관련도 0~3 숫자만"}],
+        messages=[{"role":"user","content":prompt}],
         temperature=0
     )
     try:
@@ -120,9 +125,9 @@ def relevance(topic, n):
         return 0
 
 # =====================
-# 뉴스
+# 뉴스 검색
 # =====================
-def search_news_korea(q):
+def search_news(q):
     url = "https://openapi.naver.com/v1/search/news.json"
     headers = {
         "X-Naver-Client-Id": naver_id,
@@ -143,15 +148,15 @@ def search_news_korea(q):
     return out
 
 # =====================
-# 논문 (DBpia 예정)
+# DBpia (예정)
 # =====================
-def search_dbpia(q):
-    return pd.DataFrame(columns=["제목", "저자", "학술지", "연도", "링크"])
+def search_dbpia(keyword):
+    return pd.DataFrame(columns=["제목","저자","학술지","연도","링크"])
 
 # =====================
-# 입력
+# 실행
 # =====================
-topic = st.text_input("연구 주제를 입력하세요")
+topic = st.text_input("연구 주제 입력")
 
 if st.button("🔍 리서치 시작") and topic:
     with st.spinner("리서치 진행 중..."):
@@ -160,44 +165,45 @@ if st.button("🔍 리서치 시작") and topic:
         trend = gen_trend_summary(keywords)
 
         news_list = []
-        for k in keywords[:4]:
-            news_list.extend(search_news_korea(k))
+        for k in keywords[:3]:
+            news_list.extend(search_news(k))
 
-        news_list = news_list[:25]
+        cfg = MODE_CONFIG[mode]
+        news_list = news_list[:cfg["limit"]]
 
         filtered = []
         for n in news_list:
             n["score"] = relevance(topic, n)
-            if n["score"] >= 2:
+            if n["score"] >= cfg["threshold"]:
                 filtered.append(n)
+
+        # 최소 10개 보장
+        if len(filtered) < 10:
+            news_list_sorted = sorted(news_list, key=lambda x: x["score"], reverse=True)
+            filtered = news_list_sorted[:10]
 
         news_df = pd.DataFrame(filtered).drop_duplicates(subset=["링크"])
         paper_df = search_dbpia(topic)
 
-        results = {
-            "timestamp": datetime.now().isoformat(),
+        st.session_state.results = {
             "topic": topic,
             "questions": questions,
             "keywords": keywords,
             "trend": trend,
-            "news": news_df.to_dict(orient="records"),
-            "papers": paper_df.to_dict(orient="records")
+            "news": news_df,
+            "papers": paper_df
         }
 
-        st.session_state.results = results
-
-        # =====================
-        # 저장
-        # =====================
+        # ===== 히스토리 저장 =====
         today = datetime.now().strftime("%Y-%m-%d")
-        day_dir = os.path.join(HISTORY_DIR, today)
-        os.makedirs(day_dir, exist_ok=True)
+        base = "history"
+        os.makedirs(f"{base}/{today}", exist_ok=True)
 
-        safe_name = safe_filename(topic)
-        fname = f"{safe_name}.json"
+        filename = slugify(topic) + ".json"
+        path = f"{base}/{today}/{filename}"
 
-        with open(os.path.join(day_dir, fname), "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(st.session_state.results, f, ensure_ascii=False, indent=2)
 
 # =====================
 # 출력
@@ -218,49 +224,40 @@ if st.session_state.results:
     tab_news, tab_paper = st.tabs(["📰 뉴스", "📄 논문 (DBpia 예정)"])
 
     with tab_news:
-        df = pd.DataFrame(r["news"])
+        sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
+        df = r["news"].copy()
+
         if not df.empty:
-            sort = st.radio("정렬", ["관련도순", "최신순"], horizontal=True)
-
             if sort == "관련도순":
-                df_sorted = df.sort_values(by="score", ascending=False)
+                df = df.sort_values(by="score", ascending=False)
             else:
-                df_sorted = df.sort_values(by="발행일", ascending=False)
+                df = df.sort_values(by="발행일", ascending=False)
 
-            st.dataframe(df_sorted, use_container_width=True)
-            st.download_button("📥 뉴스 CSV 다운로드",
-                df_sorted.to_csv(index=False).encode("utf-8-sig"),
-                f"{r['topic']}_news.csv"
-            )
+        st.dataframe(df, use_container_width=True)
 
-            st.subheader("📎 APA 7 참고문헌 (Strict)")
-            for _, row in df_sorted.head(10).iterrows():
-                st.markdown(f"- {apa_news_strict(row)}")
-        else:
-            st.info("뉴스 결과 없음")
+        csv_news = df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("📥 뉴스 CSV 다운로드", csv_news, f"{slugify(r['topic'])}_news.csv")
+
+        st.subheader("📎 APA 참고문헌 (Top10)")
+        for _, row in df.head(10).iterrows():
+            st.markdown(f"- {apa_news(row)}")
 
     with tab_paper:
         st.info("DBpia 연동 예정 영역입니다.")
-        pdf = pd.DataFrame(r["papers"])
-        st.dataframe(pdf, use_container_width=True)
+        st.dataframe(r["papers"], use_container_width=True)
 
 # =====================
-# 히스토리 UI
+# 히스토리
 # =====================
 st.sidebar.header("📂 날짜별 리서치 히스토리")
 
-if os.path.exists(HISTORY_DIR):
-    days = sorted(os.listdir(HISTORY_DIR), reverse=True)
-else:
-    days = []
-
-for day in days:
-    with st.sidebar.expander(f"📅 {day}"):
-        day_path = os.path.join(HISTORY_DIR, day)
-        files = sorted(os.listdir(day_path))
-        for f in files:
-            display_name = f.replace(".json", "").replace("_", " ")
-            if st.button(display_name, key=f"{day}_{f}"):
-                with open(os.path.join(day_path, f), "r", encoding="utf-8") as jf:
-                    st.session_state.results = json.load(jf)
-                st.success("리서치 복원 완료")
+if os.path.exists("history"):
+    dates = sorted(os.listdir("history"), reverse=True)
+    for d in dates:
+        with st.sidebar.expander(f"📅 {d}"):
+            files = os.listdir(f"history/{d}")
+            for f in files:
+                label = pretty(f.replace(".json",""))
+                if st.button(label, key=f"{d}_{f}"):
+                    with open(f"history/{d}/{f}", "r", encoding="utf-8") as jf:
+                        st.session_state.results = json.load(jf)
