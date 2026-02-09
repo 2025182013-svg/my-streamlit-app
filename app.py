@@ -143,14 +143,16 @@ if st.button("🔍 리서치 시작") and topic:
         keywords = gen_keywords(topic)
         trend = gen_trend_summary(keywords)
 
+        # 🔥 키워드 4개 사용 (확장)
         news_list = []
-        for k in keywords[:2]:
+        for k in keywords[:4]:
             news_list.extend(search_news_korea(k))
 
+        # 🔥 관련도 기준 완화 (>=1)
         filtered = []
         for n in news_list:
             n["score"] = relevance(topic, n)
-            if n["score"] >= 2:
+            if n["score"] >= 1:
                 filtered.append(n)
 
         news_df = pd.DataFrame(filtered).drop_duplicates(subset=["링크"])
