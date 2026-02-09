@@ -42,8 +42,8 @@ mode = st.sidebar.radio(
 
 MODE_CONFIG = {
     "📰 뉴스용 모드": {"limit": 80, "threshold": 0},
-    "📚 연구논문용 모드": {"limit": 40, "threshold": 2},
     "🏛️ 정책자료용 모드": {"limit": 60, "threshold": 1},
+    "📚 연구논문용 모드": {"limit": 40, "threshold": 2},
 }
 
 # =====================
@@ -125,7 +125,7 @@ def relevance(topic, n):
         return 0
 
 # =====================
-# 뉴스 검색 (네이버)
+# 뉴스 검색
 # =====================
 def search_news(q):
     url = "https://openapi.naver.com/v1/search/news.json"
@@ -256,7 +256,7 @@ if st.session_state.results:
         st.dataframe(r["papers"], use_container_width=True)
 
 # =====================
-# 히스토리
+# 히스토리 (에러 방지 구조)
 # =====================
 st.sidebar.header("📂 날짜별 리서치 히스토리")
 
@@ -268,8 +268,18 @@ if os.path.exists("history"):
             for f in files:
                 label = pretty(f.replace(".json",""))
                 if st.button(label, key=f"{d}_{f}"):
-                    with open(f"history/{d}/{f}", "r", encoding="utf-8") as jf:
-                        data = json.load(jf)
+
+                    file_path = f"history/{d}/{f}"
+
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as jf:
+                            data = json.load(jf)
+
                         data["news"] = pd.DataFrame(data.get("news", []))
                         data["papers"] = pd.DataFrame(data.get("papers", []))
                         st.session_state.results = data
+
+                    except json.JSONDecodeError:
+                        st.sidebar.warning(f"⚠️ 손상된 파일 스킵됨: {pretty(f.replace('.json',''))}")
+                    except Exception:
+                        st.sidebar.warning(f"⚠️ 파일 로딩 실패: {pretty(f.replace('.json',''))}")
