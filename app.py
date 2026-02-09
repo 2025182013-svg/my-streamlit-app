@@ -10,7 +10,7 @@ import io
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("핵심 키워드 기반 리서치 결과물 생성 도구")
+st.caption("핵심 키워드 기반 리서치 결과물 생성 도구 (APA 인용 · CSV 저장 지원)")
 
 # =====================
 # 세션 상태
@@ -48,6 +48,10 @@ def parse_date(d):
 
 def format_source(domain):
     return domain.replace("www.", "").split(".")[0].capitalize()
+
+def apa_news(row):
+    year = row["발행일"][:4] if row["발행일"] else "n.d."
+    return f"{row['출처']}. ({year}). {row['제목']}. {row['링크']}"
 
 # =====================
 # AI 함수
@@ -122,16 +126,9 @@ def search_news(q):
     return out
 
 # =====================
-# DBpia (미구현)
-# =====================
-def search_dbpia(keyword):
-    return []
-
-# =====================
 # UI 입력
 # =====================
 topic = st.text_input("어떤 주제로 자료를 준비하나요?")
-task_type = st.selectbox("과제 유형", ["논문", "발표"])
 
 # =====================
 # 리서치 실행
@@ -154,7 +151,6 @@ if st.button("🔍 리서치 시작") and topic:
 
         news_df = pd.DataFrame([
             {
-                "유형": "뉴스",
                 "제목": n["title"],
                 "요약": n["desc"],
                 "출처": format_source(n["link"].split("/")[2]),
@@ -164,15 +160,12 @@ if st.button("🔍 리서치 시작") and topic:
             } for n in filtered
         ]).drop_duplicates(subset=["링크"])
 
-        paper_df = pd.DataFrame(columns=["유형", "제목", "저자", "학술지", "연도", "링크"])
-
         st.session_state.results = {
             "topic": topic,
             "questions": questions,
             "keywords": keywords,
             "trend": gen_trend_summary(keywords),
-            "news": news_df,
-            "papers": paper_df
+            "news": news_df
         }
         st.session_state.history.append(topic)
 
@@ -192,36 +185,34 @@ if st.session_state.results:
     st.subheader("📈 최신 연구 동향")
     st.markdown(r["trend"])
 
-    tab1, tab2 = st.tabs(["📰 뉴스", "📄 논문 (DBpia 예정)"])
+    sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
 
-    with tab1:
-        sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
-        table = r["news"]
-        if sort == "관련도순":
-            table = table.sort_values(by="관련도", ascending=False)
-        else:
-            table = table.sort_values(by="발행일", ascending=False)
+    table = r["news"]
+    if sort == "관련도순":
+        table = table.sort_values(by="관련도", ascending=False)
+    else:
+        table = table.sort_values(by="발행일", ascending=False)
 
-        st.dataframe(table, use_container_width=True)
+    st.subheader("📰 뉴스 기반 자료")
+    st.dataframe(table, use_container_width=True)
 
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            table.to_excel(writer, index=False, sheet_name="News")
-        buffer.seek(0)
+    # =====================
+    # CSV 다운로드 (Excel 호환)
+    # =====================
+    csv = table.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "📥 리서치 결과 다운로드 (CSV / Excel 호환)",
+        data=csv,
+        file_name=f"{r['topic']}_research.csv",
+        mime="text/csv"
+    )
 
-        st.download_button(
-            "📥 뉴스 리서치 결과 엑셀 다운로드",
-            data=buffer,
-            file_name=f"{r['topic']}_news.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    with tab2:
-        st.info("DBpia 연동 예정 영역입니다.")
-        st.dataframe(r["papers"], use_container_width=True)
+    st.subheader("📎 참고문헌 (APA 형식 · 정렬 반영)")
+    for _, row in table.iterrows():
+        st.markdown(f"- {apa_news(row)}")
 
 # =====================
-# 사이드바 - 히스토리
+# 히스토리
 # =====================
 st.sidebar.header("📂 리서치 히스토리 (세션)")
 for h in reversed(st.session_state.history):
