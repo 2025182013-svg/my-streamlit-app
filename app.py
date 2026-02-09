@@ -41,9 +41,9 @@ mode = st.sidebar.radio(
 )
 
 MODE_CONFIG = {
-    "📰 뉴스용 모드": {"limit": 60, "threshold": 0},
-    "📚 연구논문용 모드": {"limit": 30, "threshold": 2},
-    "🏛️ 정책자료용 모드": {"limit": 40, "threshold": 1},
+    "📰 뉴스용 모드": {"limit": 80, "threshold": 0},
+    "📚 연구논문용 모드": {"limit": 40, "threshold": 2},
+    "🏛️ 정책자료용 모드": {"limit": 60, "threshold": 1},
 }
 
 # =====================
@@ -125,7 +125,7 @@ def relevance(topic, n):
         return 0
 
 # =====================
-# 뉴스 검색
+# 뉴스 검색 (네이버)
 # =====================
 def search_news(q):
     url = "https://openapi.naver.com/v1/search/news.json"
@@ -177,9 +177,9 @@ if st.button("🔍 리서치 시작") and topic:
             if n["score"] >= cfg["threshold"]:
                 filtered.append(n)
 
-        # 최소 10개 보장
+        # 🔥 최소 10개 보장
         if len(filtered) < 10:
-            news_list_sorted = sorted(news_list, key=lambda x: x["score"], reverse=True)
+            news_list_sorted = sorted(news_list, key=lambda x: x.get("score", 0), reverse=True)
             filtered = news_list_sorted[:10]
 
         news_df = pd.DataFrame(filtered).drop_duplicates(subset=["링크"])
@@ -202,8 +202,17 @@ if st.button("🔍 리서치 시작") and topic:
         filename = slugify(topic) + ".json"
         path = f"{base}/{today}/{filename}"
 
+        save_data = {
+            "topic": topic,
+            "questions": questions,
+            "keywords": keywords,
+            "trend": trend,
+            "news": news_df.to_dict(orient="records"),
+            "papers": paper_df.to_dict(orient="records")
+        }
+
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(st.session_state.results, f, ensure_ascii=False, indent=2)
+            json.dump(save_data, f, ensure_ascii=False, indent=2)
 
 # =====================
 # 출력
@@ -260,4 +269,7 @@ if os.path.exists("history"):
                 label = pretty(f.replace(".json",""))
                 if st.button(label, key=f"{d}_{f}"):
                     with open(f"history/{d}/{f}", "r", encoding="utf-8") as jf:
-                        st.session_state.results = json.load(jf)
+                        data = json.load(jf)
+                        data["news"] = pd.DataFrame(data.get("news", []))
+                        data["papers"] = pd.DataFrame(data.get("papers", []))
+                        st.session_state.results = data
