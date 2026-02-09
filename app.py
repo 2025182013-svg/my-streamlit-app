@@ -28,7 +28,6 @@ st.sidebar.header("🔑 API 설정")
 openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
 naver_id = st.sidebar.text_input("Naver Client ID", type="password")
 naver_secret = st.sidebar.text_input("Naver Client Secret", type="password")
-newsapi_key = st.sidebar.text_input("NewsAPI Key (글로벌 뉴스, 선택)", type="password")
 
 if not openai_key:
     st.warning("⬅️ OpenAI API Key 필수")
@@ -109,7 +108,7 @@ def classify_topic(topic):
     return "news"
 
 # =====================
-# 뉴스
+# 뉴스 (한국)
 # =====================
 def search_news_korea(q):
     url = "https://openapi.naver.com/v1/search/news.json"
@@ -127,41 +126,12 @@ def search_news_korea(q):
         })
     return out
 
-
-def search_news_global(q):
-    if not newsapi_key:
-        return []
-    url = "https://newsapi.org/v2/everything"
-    params = {"q": q, "language": "en", "sortBy": "publishedAt", "pageSize": 30, "apiKey": newsapi_key}
-    r = requests.get(url, params=params).json()
-    out = []
-    for i in r.get("articles", []):
-        out.append({
-            "제목": i.get("title"),
-            "요약": i.get("description"),
-            "출처": i.get("source", {}).get("name", "NewsAPI"),
-            "발행일": i.get("publishedAt", "")[:10],
-            "링크": i.get("url")
-        })
-    return out
-
 # =====================
-# 논문 (CrossRef)
+# 논문 (DBpia 예정)
 # =====================
-def search_crossref(q):
-    url = "https://api.crossref.org/works"
-    params = {"query": q, "rows": 20}
-    r = requests.get(url, params=params).json()
-    out = []
-    for i in r.get("message", {}).get("items", []):
-        out.append({
-            "제목": i.get("title", [""])[0],
-            "저자": ", ".join([f"{a.get('family','')} {a.get('given','')}" for a in i.get("author", [])]),
-            "학술지": i.get("container-title", [""])[0],
-            "연도": i.get("published-print", {}).get("date-parts", [[""]])[0][0] if i.get("published-print") else "",
-            "링크": i.get("URL")
-        })
-    return pd.DataFrame(out)
+def search_dbpia(q):
+    # 추후 DBpia API 연동 예정
+    return pd.DataFrame(columns=["제목", "저자", "학술지", "연도", "링크"])
 
 # =====================
 # 입력
@@ -176,13 +146,8 @@ if st.button("🔍 리서치 시작") and topic:
         trend = gen_trend_summary(keywords)
 
         news_list = []
-        if mode == "news":
-            for k in keywords[:2]:
-                news_list.extend(search_news_korea(k))
-        else:
-            for k in keywords[:2]:
-                news_list.extend(search_news_global(k))
-                news_list.extend(search_news_korea(k))
+        for k in keywords[:2]:
+            news_list.extend(search_news_korea(k))
 
         filtered = []
         for n in news_list:
@@ -191,7 +156,7 @@ if st.button("🔍 리서치 시작") and topic:
                 filtered.append(n)
 
         news_df = pd.DataFrame(filtered).drop_duplicates(subset=["링크"])
-        paper_df = search_crossref(topic)
+        paper_df = search_dbpia(topic)
 
         st.session_state.results = {
             "timestamp": datetime.now().isoformat(),
@@ -229,7 +194,7 @@ if st.session_state.results:
     st.subheader("📈 연구 동향")
     st.markdown(r["trend"])
 
-    tab_news, tab_paper = st.tabs(["📰 뉴스", "📄 논문"])
+    tab_news, tab_paper = st.tabs(["📰 뉴스", "📄 논문 (DBpia 예정)"])
 
     with tab_news:
         df = pd.DataFrame(r["news"])
@@ -250,6 +215,7 @@ if st.session_state.results:
 
     with tab_paper:
         pdf = pd.DataFrame(r["papers"])
+        st.info("DBpia 연동 예정 영역입니다.")
         st.dataframe(pdf, use_container_width=True)
         st.download_button("📥 논문 CSV", pdf.to_csv(index=False).encode("utf-8-sig"), f"{r['topic']}_papers.csv")
 
@@ -264,6 +230,9 @@ else:
     saved = []
 
 for h in reversed(saved):
-    if st.sidebar.button(f"{h['topic']} ({h['timestamp'][:10]})"):
+    topic_label = h.get("topic", "NoTitle")
+    ts = h.get("timestamp", "")
+    ts_label = ts[:10] if ts else ""
+    if st.sidebar.button(f"{topic_label} {ts_label}"):
         st.session_state.results = h
         st.success("리서치 복원 완료")
