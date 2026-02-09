@@ -1,5 +1,5 @@
 import streamlit as st
-import requests, html
+import requests, html, json, os
 from datetime import datetime
 from openai import OpenAI
 import pandas as pd
@@ -10,15 +10,17 @@ import io
 # =====================
 st.set_page_config(page_title="RefNote AI", layout="wide")
 st.title("📚 RefNote AI")
-st.caption("핵심 키워드 기반 리서치 결과물 생성 도구 (APA 인용 · CSV 저장 지원)")
+st.caption("핵심 키워드 기반 리서치 결과물 생성 도구 (APA 7판 · CSV 다운로드 · 검색 내역 저장)")
 
 # =====================
-# 세션 상태
+# 세션 상태 초기화
 # =====================
 if "results" not in st.session_state:
     st.session_state.results = None
 if "history" not in st.session_state:
     st.session_state.history = []
+
+HISTORY_FILE = "history.json"
 
 # =====================
 # 사이드바 - API
@@ -49,9 +51,11 @@ def parse_date(d):
 def format_source(domain):
     return domain.replace("www.", "").split(".")[0].capitalize()
 
+# APA 7판 웹 뉴스 형식
 def apa_news(row):
+    author = row.get("저자", row["출처"])
     year = row["발행일"][:4] if row["발행일"] else "n.d."
-    return f"{row['출처']}. ({year}). {row['제목']}. {row['링크']}"
+    return f"{author}. ({year}). {row['제목']}. {row['출처']}. {row['링크']}"
 
 # =====================
 # AI 함수
@@ -104,7 +108,7 @@ def relevance(topic, n):
         return 0
 
 # =====================
-# 네이버 뉴스
+# 뉴스 검색
 # =====================
 def search_news(q):
     url = "https://openapi.naver.com/v1/search/news.json"
@@ -118,56 +122,61 @@ def search_news(q):
     out = []
     for i in r.get("items", []):
         out.append({
-            "title": clean(i["title"]),
-            "desc": clean(i["description"]),
-            "link": i["link"],
-            "date": parse_date(i["pubDate"])
+            "제목": clean(i["title"]),
+            "요약": clean(i["description"]),
+            "출처": format_source(i["link"].split("/")[2]),
+            "발행일": parse_date(i["pubDate"]).strftime("%Y-%m-%d") if parse_date(i["pubDate"]) else "",
+            "링크": i["link"]
         })
     return out
 
 # =====================
-# UI 입력
+# 논문(DBpia) 미구현
 # =====================
-topic = st.text_input("어떤 주제로 자료를 준비하나요?")
+def search_dbpia(keyword):
+    return pd.DataFrame(columns=["제목","저자","학술지","연도","링크"])
 
 # =====================
 # 리서치 실행
 # =====================
+topic = st.text_input("어떤 주제로 자료를 준비하나요?")
+
 if st.button("🔍 리서치 시작") and topic:
     with st.spinner("리서치 진행 중..."):
         questions = gen_questions(topic)
         keywords = gen_keywords(topic)
 
-        news_raw = []
+        # 뉴스 검색
+        news_list = []
         for k in keywords[:2]:
-            news_raw.extend(search_news(k))
+            news_list.extend(search_news(k))
 
+        # 관련도 필터링
         filtered = []
-        for n in news_raw:
-            s = relevance(topic, n)
-            if s >= 2:
-                n["score"] = s
+        for n in news_list:
+            n["score"] = relevance(topic, n)
+            if n["score"] >= 2:
                 filtered.append(n)
 
-        news_df = pd.DataFrame([
-            {
-                "제목": n["title"],
-                "요약": n["desc"],
-                "출처": format_source(n["link"].split("/")[2]),
-                "발행일": n["date"].strftime("%Y-%m-%d") if n["date"] else "",
-                "관련도": n["score"],
-                "링크": n["link"]
-            } for n in filtered
-        ]).drop_duplicates(subset=["링크"])
+        news_df = pd.DataFrame(filtered).drop_duplicates(subset=["링크"])
+        paper_df = search_dbpia(topic)  # 미구현
 
+        trend_summary = gen_trend_summary(keywords)
+
+        # 세션에 저장
         st.session_state.results = {
             "topic": topic,
             "questions": questions,
             "keywords": keywords,
-            "trend": gen_trend_summary(keywords),
-            "news": news_df
+            "trend": trend_summary,
+            "news": news_df,
+            "papers": paper_df
         }
+
+        # 검색 내역 JSON 저장
         st.session_state.history.append(topic)
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(st.session_state.history, f, ensure_ascii=False, indent=2)
 
 # =====================
 # 결과 출력
@@ -185,35 +194,65 @@ if st.session_state.results:
     st.subheader("📈 최신 연구 동향")
     st.markdown(r["trend"])
 
-    sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
+    # 뉴스 / 논문 탭
+    tab_news, tab_paper = st.tabs(["📰 뉴스", "📄 논문 (DBpia 예정)"])
 
-    table = r["news"]
-    if sort == "관련도순":
-        table = table.sort_values(by="관련도", ascending=False)
-    else:
-        table = table.sort_values(by="발행일", ascending=False)
+    # ---------------------
+    # 뉴스 탭
+    # ---------------------
+    with tab_news:
+        sort = st.radio("정렬 기준", ["관련도순", "최신순"], horizontal=True)
+        news_table = r["news"]
+        if sort == "관련도순":
+            news_table = news_table.sort_values(by="score", ascending=False)
+        else:
+            news_table = news_table.sort_values(by="발행일", ascending=False)
 
-    st.subheader("📰 뉴스 기반 자료")
-    st.dataframe(table, use_container_width=True)
+        st.dataframe(news_table, use_container_width=True)
 
-    # =====================
-    # CSV 다운로드 (Excel 호환)
-    # =====================
-    csv = table.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "📥 리서치 결과 다운로드 (CSV / Excel 호환)",
-        data=csv,
-        file_name=f"{r['topic']}_research.csv",
-        mime="text/csv"
-    )
+        # CSV 다운로드
+        csv_news = news_table.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "📥 뉴스 리서치 CSV 다운로드",
+            data=csv_news,
+            file_name=f"{r['topic']}_news.csv",
+            mime="text/csv"
+        )
 
-    st.subheader("📎 참고문헌 (APA 형식 · 정렬 반영)")
-    for _, row in table.iterrows():
-        st.markdown(f"- {apa_news(row)}")
+        # APA 상위 10개
+        st.subheader("📎 뉴스 참고문헌 (APA 7판 · 상위 10개)")
+        for _, row in news_table.head(10).iterrows():
+            st.markdown(f"- {apa_news(row)}")
+
+    # ---------------------
+    # 논문 탭
+    # ---------------------
+    with tab_paper:
+        st.info("DBpia 연동 예정 영역입니다.")
+        st.dataframe(r["papers"], use_container_width=True)
+
+        # CSV 다운로드 (빈 데이터프레임)
+        csv_paper = r["papers"].to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "📥 논문 CSV 다운로드",
+            data=csv_paper,
+            file_name=f"{r['topic']}_papers.csv",
+            mime="text/csv"
+        )
 
 # =====================
-# 히스토리
+# 사이드바 - 검색 내역 복원
 # =====================
-st.sidebar.header("📂 리서치 히스토리 (세션)")
-for h in reversed(st.session_state.history):
-    st.sidebar.write(f"• {h}")
+st.sidebar.header("📂 리서치 히스토리")
+# 저장된 JSON 파일 읽기
+if os.path.exists(HISTORY_FILE):
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        saved_history = json.load(f)
+else:
+    saved_history = []
+
+for h in reversed(saved_history):
+    if st.sidebar.button(h):
+        st.session_state.results = st.session_state.results or {}
+        st.session_state.results["topic"] = h
+        st.info(f"'{h}' 주제 선택됨. 리서치 재실행 가능.")
