@@ -1,8 +1,10 @@
-# FULL UPDATED CODE WITH:
-# 1) APA7 STRICT FORMAT
-# 2) DATE FOLDER HISTORY
-# 3) FILENAME = TOPIC BASED
-# 4) STRONGER NEWS FILTERING
+# FULL UPDATED CODE
+# FIXES:
+# 1) HISTORY DISPLAY NAME = PURE TOPIC (no _ , no .json)
+# 2) INTERNAL FILE NAME SAFE, DISPLAY NAME PRETTY
+# 3) SORTING BUG FIXED (관련도순 / 최신순 정상 분리)
+# 4) STRONG FILTER MAINTAINED
+# 5) APA7 STRICT
 
 import streamlit as st
 import requests, html, json, os, re
@@ -57,10 +59,8 @@ def format_source(domain):
     return domain.replace("www.", "").split(".")[0].capitalize()
 
 
-def slugify(text):
-    text = re.sub(r"[^가-힣a-zA-Z0-9]+", "_", text)
-    return text[:50]
-
+def safe_filename(text):
+    return re.sub(r"[^가-힣a-zA-Z0-9]+", "_", text)[:60]
 
 # =====================
 # APA7 STRICT
@@ -120,7 +120,7 @@ def relevance(topic, n):
         return 0
 
 # =====================
-# 뉴스 (강화 필터링)
+# 뉴스
 # =====================
 def search_news_korea(q):
     url = "https://openapi.naver.com/v1/search/news.json"
@@ -159,7 +159,6 @@ if st.button("🔍 리서치 시작") and topic:
         keywords = gen_keywords(topic)
         trend = gen_trend_summary(keywords)
 
-        # 🔥 키워드 4개 + 뉴스 40개 + 상위 25개 제한
         news_list = []
         for k in keywords[:4]:
             news_list.extend(search_news_korea(k))
@@ -169,7 +168,7 @@ if st.button("🔍 리서치 시작") and topic:
         filtered = []
         for n in news_list:
             n["score"] = relevance(topic, n)
-            if n["score"] >= 2:   # 🔥 기준 강화
+            if n["score"] >= 2:
                 filtered.append(n)
 
         news_df = pd.DataFrame(filtered).drop_duplicates(subset=["링크"])
@@ -188,14 +187,14 @@ if st.button("🔍 리서치 시작") and topic:
         st.session_state.results = results
 
         # =====================
-        # 날짜별 + 주제명 파일 저장
+        # 저장
         # =====================
         today = datetime.now().strftime("%Y-%m-%d")
         day_dir = os.path.join(HISTORY_DIR, today)
         os.makedirs(day_dir, exist_ok=True)
 
-        safe_topic = slugify(topic)
-        fname = f"{safe_topic}.json"
+        safe_name = safe_filename(topic)
+        fname = f"{safe_name}.json"
 
         with open(os.path.join(day_dir, fname), "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
@@ -222,19 +221,20 @@ if st.session_state.results:
         df = pd.DataFrame(r["news"])
         if not df.empty:
             sort = st.radio("정렬", ["관련도순", "최신순"], horizontal=True)
-            if sort == "관련도순":
-                df = df.sort_values(by="score", ascending=False)
-            else:
-                df = df.sort_values(by="발행일", ascending=False)
 
-            st.dataframe(df, use_container_width=True)
+            if sort == "관련도순":
+                df_sorted = df.sort_values(by="score", ascending=False)
+            else:
+                df_sorted = df.sort_values(by="발행일", ascending=False)
+
+            st.dataframe(df_sorted, use_container_width=True)
             st.download_button("📥 뉴스 CSV 다운로드",
-                df.to_csv(index=False).encode("utf-8-sig"),
+                df_sorted.to_csv(index=False).encode("utf-8-sig"),
                 f"{r['topic']}_news.csv"
             )
 
             st.subheader("📎 APA 7 참고문헌 (Strict)")
-            for _, row in df.head(10).iterrows():
+            for _, row in df_sorted.head(10).iterrows():
                 st.markdown(f"- {apa_news_strict(row)}")
         else:
             st.info("뉴스 결과 없음")
@@ -245,7 +245,7 @@ if st.session_state.results:
         st.dataframe(pdf, use_container_width=True)
 
 # =====================
-# 히스토리 사이드바
+# 히스토리 UI
 # =====================
 st.sidebar.header("📂 날짜별 리서치 히스토리")
 
@@ -259,6 +259,8 @@ for day in days:
         day_path = os.path.join(HISTORY_DIR, day)
         files = sorted(os.listdir(day_path))
         for f in files:
-            if st.button(f, key=f"{day}_{f}"):
+            display_name = f.replace(".json", "").replace("_", " ")
+            if st.button(display_name, key=f"{day}_{f}"):
                 with open(os.path.join(day_path, f), "r", encoding="utf-8") as jf:
                     st.session_state.results = json.load(jf)
+                st.success("리서치 복원 완료")
