@@ -54,8 +54,6 @@ else:
 topic = st.text_input("어떤 주제로 자료를 준비하나요?")
 task_type = st.selectbox("과제 유형", ["논문", "리포트", "발표"])
 
-exclude_keywords = st.text_input("🚫 제외할 키워드 (쉼표로 구분, 선택)")
-
 # -----------------------------
 # OpenAI - 리서치 질문 생성
 # -----------------------------
@@ -65,13 +63,14 @@ def generate_questions(topic, task):
 과제 유형: {task}
 
 이 주제에 대해 학술적으로 의미 있는 리서치 질문 3개만 생성해줘.
+불필요한 설명 없이 질문만 출력해줘.
 """
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
-    return res.choices[0].message.content.strip().split("\n")
+    return [q.strip("•- ") for q in res.choices[0].message.content.split("\n") if q.strip()]
 
 # -----------------------------
 # OpenAI - 키워드 & 연구 동향
@@ -80,18 +79,19 @@ def generate_keywords_and_trend(topic):
     prompt = f"""
 주제: {topic}
 
-1. 검색에 적합한 핵심 키워드 5개
+1. 뉴스 및 학술 검색에 적합한 핵심 키워드 5개
 2. 최근 연구 동향 요약 (3~4문장)
 
 형식:
-키워드: ...
-동향: ...
+키워드: 키워드1, 키워드2, 키워드3, 키워드4, 키워드5
+동향: 요약문
 """
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
+
     text = res.choices[0].message.content
     keywords = text.split("키워드:")[1].split("동향:")[0].strip().split(",")
     trend = text.split("동향:")[1].strip()
@@ -100,7 +100,7 @@ def generate_keywords_and_trend(topic):
 # -----------------------------
 # Naver 뉴스 검색
 # -----------------------------
-def search_news(query, exclude):
+def search_news(query):
     url = "https://openapi.naver.com/v1/search/news.json"
     headers = {
         "X-Naver-Client-Id": naver_id,
@@ -108,7 +108,7 @@ def search_news(query, exclude):
     }
     params = {
         "query": query,
-        "display": 20,
+        "display": 30,
         "sort": "date",
     }
 
@@ -120,17 +120,15 @@ def search_news(query, exclude):
         title = html.unescape(item["title"])
         desc = html.unescape(item["description"])
 
-        if exclude:
-            if any(e.strip() in title for e in exclude):
-                continue
-
-        pubdate = datetime.strptime(item["pubDate"], "%a, %d %b %Y %H:%M:%S %z")
+        pubdate = datetime.strptime(
+            item["pubDate"], "%a, %d %b %Y %H:%M:%S %z"
+        )
 
         items.append({
             "제목": title,
             "요약": desc,
             "출처": item["originallink"],
-            "연도": pubdate.strftime("%Y-%m-%d"),
+            "작성일": pubdate.strftime("%Y-%m-%d"),
         })
 
     return pd.DataFrame(items)
@@ -143,7 +141,7 @@ def make_apa(df):
     for _, r in df.head(10).iterrows():
         domain = r["출처"].split("/")[2]
         refs.append(
-            f"{domain}. ({r['연도']}). {r['제목']}. {r['출처']}"
+            f"{domain}. ({r['작성일']}). {r['제목']}. {r['출처']}"
         )
     return refs
 
@@ -154,8 +152,7 @@ if st.button("🔍 리서치 시작") and client:
     with st.spinner("리서치 진행 중..."):
         questions = generate_questions(topic, task_type)
         keywords, trend = generate_keywords_and_trend(topic)
-        news_df = search_news(" ".join(keywords), exclude_keywords.split(","))
-
+        news_df = search_news(" ".join(keywords))
         references = make_apa(news_df)
 
         result = {
@@ -187,7 +184,7 @@ if data:
     st.markdown("## 🧠 최신 연구 동향")
     st.write(data["trend"])
 
-    st.markdown("## 📊 근거 자료 (뉴스)")
+    st.markdown("## 📊 근거 자료 (뉴스, 최신순)")
     st.dataframe(data["news"], use_container_width=True)
 
     st.markdown("## 📎 참고문헌 (APA 형식, TOP 10)")
