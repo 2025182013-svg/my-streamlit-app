@@ -136,4 +136,129 @@ def search_news_korea(q):
         out.append({
             "제목": clean(i["title"]),
             "요약": clean(i["description"]),
-            "출처": format_source(i["link"
+            "출처": format_source(i["link"].split("/")[2]),
+            "발행일": parse_date(i["pubDate"]).strftime("%Y-%m-%d") if parse_date(i["pubDate"]) else "",
+            "링크": i["link"]
+        })
+    return out
+
+# =====================
+# 논문 (DBpia 예정)
+# =====================
+def search_dbpia(q):
+    return pd.DataFrame(columns=["제목", "저자", "학술지", "연도", "링크"])
+
+# =====================
+# 입력
+# =====================
+topic = st.text_input("연구 주제를 입력하세요")
+
+if st.button("🔍 리서치 시작") and topic:
+    with st.spinner("리서치 진행 중..."):
+        questions = gen_questions(topic)
+        keywords = gen_keywords(topic)
+        trend = gen_trend_summary(keywords)
+
+        # 🔥 키워드 4개 + 뉴스 40개 + 상위 25개 제한
+        news_list = []
+        for k in keywords[:4]:
+            news_list.extend(search_news_korea(k))
+
+        news_list = news_list[:25]
+
+        filtered = []
+        for n in news_list:
+            n["score"] = relevance(topic, n)
+            if n["score"] >= 2:   # 🔥 기준 강화
+                filtered.append(n)
+
+        news_df = pd.DataFrame(filtered).drop_duplicates(subset=["링크"])
+        paper_df = search_dbpia(topic)
+
+        results = {
+            "timestamp": datetime.now().isoformat(),
+            "topic": topic,
+            "questions": questions,
+            "keywords": keywords,
+            "trend": trend,
+            "news": news_df.to_dict(orient="records"),
+            "papers": paper_df.to_dict(orient="records")
+        }
+
+        st.session_state.results = results
+
+        # =====================
+        # 날짜별 + 주제명 파일 저장
+        # =====================
+        today = datetime.now().strftime("%Y-%m-%d")
+        day_dir = os.path.join(HISTORY_DIR, today)
+        os.makedirs(day_dir, exist_ok=True)
+
+        safe_topic = slugify(topic)
+        fname = f"{safe_topic}.json"
+
+        with open(os.path.join(day_dir, fname), "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+
+# =====================
+# 출력
+# =====================
+if st.session_state.results:
+    r = st.session_state.results
+
+    st.subheader("🔍 연구 질문")
+    for q in r["questions"]:
+        st.markdown(f"• {q}")
+
+    st.subheader("🔑 핵심 키워드")
+    st.write(", ".join(r["keywords"]))
+
+    st.subheader("📈 연구 동향")
+    st.markdown(r["trend"])
+
+    tab_news, tab_paper = st.tabs(["📰 뉴스", "📄 논문 (DBpia 예정)"])
+
+    with tab_news:
+        df = pd.DataFrame(r["news"])
+        if not df.empty:
+            sort = st.radio("정렬", ["관련도순", "최신순"], horizontal=True)
+            if sort == "관련도순":
+                df = df.sort_values(by="score", ascending=False)
+            else:
+                df = df.sort_values(by="발행일", ascending=False)
+
+            st.dataframe(df, use_container_width=True)
+            st.download_button("📥 뉴스 CSV 다운로드",
+                df.to_csv(index=False).encode("utf-8-sig"),
+                f"{r['topic']}_news.csv"
+            )
+
+            st.subheader("📎 APA 7 참고문헌 (Strict)")
+            for _, row in df.head(10).iterrows():
+                st.markdown(f"- {apa_news_strict(row)}")
+        else:
+            st.info("뉴스 결과 없음")
+
+    with tab_paper:
+        st.info("DBpia 연동 예정 영역입니다.")
+        pdf = pd.DataFrame(r["papers"])
+        st.dataframe(pdf, use_container_width=True)
+
+# =====================
+# 히스토리 사이드바
+# =====================
+st.sidebar.header("📂 날짜별 리서치 히스토리")
+
+if os.path.exists(HISTORY_DIR):
+    days = sorted(os.listdir(HISTORY_DIR), reverse=True)
+else:
+    days = []
+
+for day in days:
+    with st.sidebar.expander(f"📅 {day}"):
+        day_path = os.path.join(HISTORY_DIR, day)
+        files = sorted(os.listdir(day_path))
+        for f in files:
+            if st.button(f, key=f"{day}_{f}"):
+                with open(os.path.join(day_path, f), "r", encoding="utf-8") as jf:
+                    st.session_state.results = json.load(jf)
