@@ -41,17 +41,14 @@ client = OpenAI(api_key=openai_key)
 def clean(t):
     return html.unescape(t).replace("<b>", "").replace("</b>", "").strip()
 
-
 def parse_date(d):
     try:
         return datetime.strptime(d, "%a, %d %b %Y %H:%M:%S %z")
     except:
         return None
 
-
 def format_source(domain):
     return domain.replace("www.", "").split(".")[0].capitalize()
-
 
 def apa_news(row):
     author = row.get("저자", row.get("출처", "Unknown"))
@@ -69,7 +66,6 @@ def gen_questions(topic):
     )
     return [q.strip("-• ") for q in r.choices[0].message.content.split("\n") if q.strip()]
 
-
 def gen_keywords(topic):
     r = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -78,7 +74,6 @@ def gen_keywords(topic):
     )
     return [k.strip() for k in r.choices[0].message.content.split(",")]
 
-
 def gen_trend_summary(keywords):
     r = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -86,7 +81,6 @@ def gen_trend_summary(keywords):
         temperature=0.2
     )
     return r.choices[0].message.content.strip()
-
 
 def relevance(topic, n):
     r = client.chat.completions.create(
@@ -100,7 +94,7 @@ def relevance(topic, n):
         return 0
 
 # =====================
-# 분류기
+# 주제 분류
 # =====================
 def classify_topic(topic):
     if any(k in topic for k in ["비교", "vs", "정책", "제도", "국가", "모델"]):
@@ -108,13 +102,17 @@ def classify_topic(topic):
     return "news"
 
 # =====================
-# 뉴스 (한국)
+# 뉴스 (네이버)
 # =====================
 def search_news_korea(q):
     url = "https://openapi.naver.com/v1/search/news.json"
-    headers = {"X-Naver-Client-Id": naver_id, "X-Naver-Client-Secret": naver_secret}
+    headers = {
+        "X-Naver-Client-Id": naver_id,
+        "X-Naver-Client-Secret": naver_secret
+    }
     params = {"query": q, "display": 30, "sort": "date"}
     r = requests.get(url, headers=headers, params=params).json()
+
     out = []
     for i in r.get("items", []):
         out.append({
@@ -196,6 +194,7 @@ if st.session_state.results:
 
     tab_news, tab_paper = st.tabs(["📰 뉴스", "📄 논문 (DBpia 예정)"])
 
+    # 뉴스
     with tab_news:
         df = pd.DataFrame(r["news"])
         if not df.empty:
@@ -204,8 +203,13 @@ if st.session_state.results:
                 df = df.sort_values(by="score", ascending=False)
             else:
                 df = df.sort_values(by="발행일", ascending=False)
+
             st.dataframe(df, use_container_width=True)
-            st.download_button("📥 뉴스 CSV", df.to_csv(index=False).encode("utf-8-sig"), f"{r['topic']}_news.csv")
+            st.download_button(
+                "📥 뉴스 CSV 다운로드",
+                df.to_csv(index=False).encode("utf-8-sig"),
+                f"{r['topic']}_news.csv"
+            )
 
             st.subheader("📎 APA 참고문헌 (Top10)")
             for _, row in df.head(10).iterrows():
@@ -213,11 +217,16 @@ if st.session_state.results:
         else:
             st.info("뉴스 결과 없음")
 
+    # 논문
     with tab_paper:
         pdf = pd.DataFrame(r["papers"])
         st.info("DBpia 연동 예정 영역입니다.")
         st.dataframe(pdf, use_container_width=True)
-        st.download_button("📥 논문 CSV", pdf.to_csv(index=False).encode("utf-8-sig"), f"{r['topic']}_papers.csv")
+        st.download_button(
+            "📥 논문 CSV 다운로드",
+            pdf.to_csv(index=False).encode("utf-8-sig"),
+            f"{r['topic']}_papers.csv"
+        )
 
 # =====================
 # 히스토리
@@ -230,9 +239,20 @@ else:
     saved = []
 
 for h in reversed(saved):
-    topic_label = h.get("topic", "NoTitle")
-    ts = h.get("timestamp", "")
-    ts_label = ts[:10] if ts else ""
+    # 구버전 history.json 문자열 구조 대응
+    if isinstance(h, str):
+        topic_label = h
+        ts_label = ""
+        data_obj = None
+    else:
+        topic_label = h.get("topic", "NoTitle")
+        ts = h.get("timestamp", "")
+        ts_label = ts[:10] if ts else ""
+        data_obj = h
+
     if st.sidebar.button(f"{topic_label} {ts_label}"):
-        st.session_state.results = h
-        st.success("리서치 복원 완료")
+        if data_obj:
+            st.session_state.results = data_obj
+            st.success("리서치 복원 완료")
+        else:
+            st.warning("구버전 히스토리입니다. 리서치를 다시 실행하세요.")
